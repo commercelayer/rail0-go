@@ -25,35 +25,9 @@ const (
 	TopicPaymentsFailed     = "payments.failed"
 )
 
-// Webhook is a webhook subscription. SharedSecret is populated only on the
-// create and rotate_secret responses; it is omitted on every other endpoint.
-type Webhook struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	CallbackURL         string `json:"callback_url"`
-	Topic               string `json:"topic"`
-	Active              bool   `json:"active"`
-	CircuitState        string `json:"circuit_state"`
-	CircuitFailureCount int    `json:"circuit_failure_count"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at,omitempty"`
-	// SharedSecret is returned only on create and rotate_secret.
-	SharedSecret string `json:"shared_secret,omitempty"`
-}
-
-// EventCallback is a single webhook delivery attempt.
-type EventCallback struct {
-	ID              string `json:"id"`
-	WebhookID       string `json:"webhook_id"`
-	PaymentID       string `json:"payment_id"`
-	Topic           string `json:"topic"`
-	CallbackURL     string `json:"callback_url"`
-	ResponseCode    *int   `json:"response_code,omitempty"`
-	ResponseMessage string `json:"response_message,omitempty"`
-	ErrorReason     string `json:"error_reason,omitempty"`
-	Status          string `json:"status"`
-	CreatedAt       string `json:"created_at"`
-}
+// Webhook (the webhook subscription shape, including the SharedSecret returned
+// only on create and rotate_secret) and EventCallback (a single delivery
+// attempt) are generated from the gateway OpenAPI schema in types_gen.go.
 
 // ListWebhooksParams holds optional query parameters for WebhooksService.List.
 type ListWebhooksParams struct {

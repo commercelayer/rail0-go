@@ -7,14 +7,8 @@ type ChainsService struct {
 	http *httpClient
 }
 
-// Blockchain is a supported EVM chain as returned by GET /blockchains.
-type Blockchain struct {
-	ChainID      int    `json:"chain_id"`
-	Name         string `json:"name"`
-	NativeSymbol string `json:"native_symbol"`
-	NetworkType  string `json:"network_type"`
-	ExplorerURL  string `json:"explorer_url"`
-}
+// Blockchain (the GET /blockchains response shape) is generated from the
+// gateway OpenAPI schema in types_gen.go.
 
 // List returns all active blockchains.
 func (s *ChainsService) List(ctx context.Context) ([]Blockchain, error) {

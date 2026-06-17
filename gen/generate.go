@@ -6,20 +6,35 @@
 //
 // Schema source (first match wins):
 //  1. RAIL0_SCHEMA_PATH env var — absolute path to a local openapi.json
-//  2. Default: ../rail0-api/docs/openapi.json  (sibling repo)
+//  2. Default: ../rail0-gateway/docs/openapi.json  (sibling gateway repo)
 //
-// Steps:
-//  1. Resolve schema path (see above)
-//  2. Parse component schemas
-//  3. Emit types_gen.go — do not hand-edit that file
-//  4. Emit accounts.go, payments.go, chains.go, tokens.go
+// What it emits:
+//   - types_gen.go ONLY — the request/response data types derived from the
+//     gateway's components.schemas. This is the single source of truth for the
+//     SDK's domain types. Do NOT hand-edit types_gen.go.
+//
+// What it does NOT emit:
+//   - The client method files (accounts.go, payments.go, chains.go, tokens.go,
+//     auth.go, webhooks.go, health.go). Those are hand-maintained and aligned to
+//     the gateway API surface; the generator must never overwrite them.
+//
+// OpenAPI 3.1 handling:
+//   - `type` may be a JSON string ("string") or an array (["string","null"]).
+//     A "null" member marks the property nullable.
+//   - `allOf` is treated as inheritance: a schema that is allOf[$ref(Base), {…}]
+//     is flattened into a single struct that inlines the base's properties first,
+//     then its own. This matches the SDK convention of exposing one struct per
+//     resource (e.g. Payment carries the PaymentDetail extras; Webhook carries the
+//     WebhookWithSecret shared_secret).
 //
 // Add future generation steps here.
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,11 +46,16 @@ import (
 )
 
 // ================================================================
-//  Minimal OpenAPI 3.x types (only the subset we need)
+//  Minimal OpenAPI 3.1 types (only the subset we need)
 // ================================================================
 
+// Schema models the subset of an OpenAPI 3.1 schema object we consume.
+//
+// Type is json.RawMessage because OpenAPI 3.1 allows `type` to be either a
+// single string ("string") or an array of strings (["string","null"]); we
+// decode it lazily in typeInfo.
 type Schema struct {
-	Type        string             `json:"type"`
+	Type        json.RawMessage    `json:"type"`
 	Format      string             `json:"format"`
 	Description string             `json:"description"`
 	Properties  map[string]*Schema `json:"properties"`
@@ -43,8 +63,7 @@ type Schema struct {
 	Ref         string             `json:"$ref"`
 	AllOf       []*Schema          `json:"allOf"`
 	Enum        []string           `json:"enum"`
-	Minimum     *float64           `json:"minimum"`
-	Maximum     *float64           `json:"maximum"`
+	Items       *Schema            `json:"items"`
 }
 
 type OpenAPI struct {
@@ -53,30 +72,150 @@ type OpenAPI struct {
 	} `json:"components"`
 }
 
+// typeInfo decodes the (possibly array) `type` keyword into a primary type plus
+// a nullable flag. OpenAPI 3.1 expresses "string or null" as ["string","null"].
+func (s *Schema) typeInfo() (primary string, nullable bool) {
+	if len(s.Type) == 0 {
+		return "", false
+	}
+	// Try a bare string first.
+	var single string
+	if err := json.Unmarshal(s.Type, &single); err == nil {
+		return single, false
+	}
+	// Otherwise it's an array of types.
+	var arr []string
+	if err := json.Unmarshal(s.Type, &arr); err == nil {
+		for _, t := range arr {
+			if t == "null" {
+				nullable = true
+				continue
+			}
+			if primary == "" {
+				primary = t
+			}
+		}
+	}
+	return primary, nullable
+}
+
 // ================================================================
-//  Type mapping
+//  SDK-specific generation config
 // ================================================================
 
-// primitive schemas that map to Go type aliases
+// primitiveAliases maps a component-schema name to a Go type alias. These are
+// emitted as `type X = base` aliases rather than structs. (Currently the
+// gateway schema carries no primitive component schemas; the aliases the SDK
+// relies on — Address, Bytes32, Uint256String — are hand-kept in types.go
+// alongside the EIP-712 signing types. Kept here for forward compatibility.)
 var primitiveAliases = map[string]string{
 	"Address":       "string",
 	"Bytes32":       "string",
 	"Uint256String": "string",
 }
 
+// schemaTypeOverride maps an exact (SchemaName, jsonProperty) to a Go type that
+// overrides the default mapping, so generated types match the aligned client's
+// chosen aliases and ergonomics. Empty value means "use default".
+var schemaTypeOverride = map[string]map[string]string{
+	// Payment carries both the base Payment fields and the merged PaymentDetail
+	// extras, so its overrides cover both (merge uses the canonical name).
+	"Payment": {
+		"rail0_id":             "Bytes32",
+		"config_hash":          "Bytes32",
+		"amount":               "Uint256String",
+		"payer":                "Address",
+		"payee":                "Address",
+		"token":                "Address",
+		"rail0_contract":       "Address",
+		"signing_payload":      "*SigningPayload",
+		"authorization_expiry": "int64",
+		"refund_expiry":        "int64",
+	},
+	"Transaction": {
+		"amount":           "Uint256String",
+		"transaction_hash": "*Bytes32",
+		"block_number":     "*int",
+	},
+	"Webhook": {
+		"topic": "string",
+	},
+	"EventCallback": {
+		"response_code": "*int",
+	},
+	"WalletToken": {
+		"address":       "Address",
+		"token_address": "Address",
+	},
+	"Token": {
+		"address": "Address",
+	},
+}
+
+// fieldNameOverride pins the exported Go name for specific (Schema, jsonProperty)
+// pairs where the default initialism rules would diverge from the aligned
+// client's public field name. Keeps the SDK API stable across regeneration.
+var fieldNameOverride = map[string]map[string]string{
+	"Payment": {"rail0_id": "Rail0Id"},
+}
+
+// extraFields injects SDK-only fields onto a generated struct that have no
+// counterpart in the OpenAPI schema (e.g. payloads the SDK threads through but
+// the gateway does not document as a discrete property).
+var extraFields = map[string][]Field{
+	"Transaction": {
+		{
+			Name:    "SigningPayload",
+			Type:    "*SigningPayload",
+			JSON:    "signing_payload",
+			Pointer: true,
+			Doc:     "SigningPayload is returned by the refund prepare phase-1 step (no signature supplied yet) so the payee can sign the EIP-3009 authorization. SDK-only; not part of the OpenAPI Transaction schema.",
+		},
+	},
+}
+
+// allOfMergeParent lists schemas whose allOf base should be flattened INTO the
+// derived schema, and whether the derived schema should keep the parent's name.
+// We merge PaymentDetail's extras into Payment and WebhookWithSecret's extras
+// into Webhook so the SDK exposes one struct per resource (matching the aligned
+// client). The derived-only schema name is then skipped from output.
+//
+// key = derived schema name, value = the canonical struct name to merge into.
+var mergeInto = map[string]string{
+	"PaymentDetail":     "Payment",
+	"WebhookWithSecret": "Webhook",
+}
+
+// skipSchemas are component schemas the generator must NOT emit as Go types,
+// because the aligned client hand-maintains an equivalent (often renamed or
+// reshaped) type. Health/Session/Nonce are exposed by the client as
+// HealthResponse/AuthResponse/NonceResponse with hand-tuned fields.
+var skipSchemas = map[string]bool{
+	"Health":  true,
+	"Session": true,
+	"Nonce":   true,
+}
+
+// ================================================================
+//  Type mapping
+// ================================================================
+
 // goType resolves an OpenAPI schema to a Go type expression.
 func goType(s *Schema) string {
-	// $ref → use the schema name directly
+	// $ref → use the referenced schema name directly (resolving merge targets).
 	if s.Ref != "" {
-		parts := strings.Split(s.Ref, "/")
-		return parts[len(parts)-1]
+		name := refName(s.Ref)
+		if canon, ok := mergeInto[name]; ok {
+			return canon
+		}
+		return name
 	}
-	// allOf with a single $ref is used to attach a description to a ref — unwrap it.
+	// allOf with a single $ref attaches a description to a ref — unwrap it.
 	if len(s.AllOf) == 1 && s.AllOf[0].Ref != "" {
-		parts := strings.Split(s.AllOf[0].Ref, "/")
-		return parts[len(parts)-1]
+		return refName(s.AllOf[0].Ref)
 	}
-	switch s.Type {
+	primary, _ := s.typeInfo()
+	switch primary {
 	case "string":
 		return "string"
 	case "boolean":
@@ -88,21 +227,37 @@ func goType(s *Schema) string {
 		return "int"
 	case "number":
 		return "float64"
+	case "array":
+		if s.Items != nil {
+			return "[]" + goType(s.Items)
+		}
+		return "[]any"
+	case "object", "":
+		return "any"
 	default:
 		return "any"
 	}
 }
 
-// exported converts a JSON property name (snake_case or camelCase) to an exported Go name (PascalCase).
+func refName(ref string) string {
+	parts := strings.Split(ref, "/")
+	return parts[len(parts)-1]
+}
+
+// exported converts a JSON property name (snake_case) to an exported Go name
+// (PascalCase), upper-casing common initialisms for idiomatic Go.
 func exported(name string) string {
 	if name == "" {
 		return ""
 	}
-	// Handle snake_case: split on underscores and title-case each segment.
 	parts := strings.Split(name, "_")
 	var b strings.Builder
 	for _, p := range parts {
 		if p == "" {
+			continue
+		}
+		if up, ok := initialisms[strings.ToLower(p)]; ok {
+			b.WriteString(up)
 			continue
 		}
 		r := []rune(p)
@@ -110,6 +265,16 @@ func exported(name string) string {
 		b.WriteString(string(r))
 	}
 	return b.String()
+}
+
+// initialisms is the set of segments that should be fully upper-cased to match
+// Go naming conventions and the existing hand-written field names.
+var initialisms = map[string]string{
+	"id":   "ID",
+	"url":  "URL",
+	"api":  "API",
+	"db":   "DB",
+	"uuid": "UUID",
 }
 
 // ================================================================
@@ -121,13 +286,23 @@ type Field struct {
 	Type    string // Go type
 	JSON    string // original JSON key
 	Doc     string // inline doc comment (may be empty)
-	Pointer bool   // true when the field is optional (not in required list)
+	Pointer bool   // true when the field is optional (emits ,omitempty)
 }
 
 type Struct struct {
 	Name   string
 	Doc    string
 	Fields []Field
+}
+
+type EnumConst struct {
+	Doc    string
+	Values []EnumValue
+}
+
+type EnumValue struct {
+	Name  string
+	Value string
 }
 
 type Alias struct {
@@ -147,10 +322,14 @@ type GenData struct {
 // ================================================================
 
 const goTypesTemplate = `// Code generated by gen/generate.go on {{ .Timestamp }}; DO NOT EDIT.
-// Source: rail0-api/docs/openapi.json
+// Source: rail0-gateway/docs/openapi.json
 //
-// To regenerate after changing the OpenAPI spec:
+// To regenerate after changing the gateway OpenAPI spec:
 //   go run gen/generate.go
+//
+// This file holds ONLY the domain request/response types derived from the
+// gateway's components.schemas. The client method files and the EIP-712 signing
+// helper types are hand-maintained elsewhere.
 
 package rail0
 {{ range .Aliases }}
@@ -175,595 +354,6 @@ type PaginatedResponse[T any] struct {
 	Data []T      ` + "`" + `json:"data"` + "`" + `
 	Meta PageMeta ` + "`" + `json:"meta"` + "`" + `
 }
-
-// WalletTokenItem is a single token entry nested inside a Wallet.
-type WalletTokenItem struct {
-	ID            string ` + "`" + `json:"id"` + "`" + `
-	TokenID       string ` + "`" + `json:"token_id"` + "`" + `
-	TokenSymbol   string ` + "`" + `json:"token_symbol"` + "`" + `
-	TokenAddress  string ` + "`" + `json:"token_address"` + "`" + `
-	TokenDecimals int    ` + "`" + `json:"token_decimals"` + "`" + `
-	ChainID       int    ` + "`" + `json:"chain_id"` + "`" + `
-	ChainName     string ` + "`" + `json:"chain_name"` + "`" + `
-	ChainSlug     string ` + "`" + `json:"chain_slug"` + "`" + `
-	Default       bool   ` + "`" + `json:"default"` + "`" + `
-	Active        bool   ` + "`" + `json:"active"` + "`" + `
-}
-
-// Wallet is a merchant wallet with its associated token configurations.
-type Wallet struct {
-	ID      string            ` + "`" + `json:"id"` + "`" + `
-	Address string            ` + "`" + `json:"address"` + "`" + `
-	Label   string            ` + "`" + `json:"label,omitempty"` + "`" + `
-	Active  bool              ` + "`" + `json:"active"` + "`" + `
-	Tokens  []WalletTokenItem ` + "`" + `json:"tokens"` + "`" + `
-}
-
-`
-
-// ================================================================
-//  Resource file templates
-// ================================================================
-
-const goAccountsTemplate = `// Code generated by gen/generate.go — DO NOT EDIT.
-// Re-run: go run gen/generate.go
-
-package rail0
-
-import (
-	"context"
-	"fmt"
-	"net/url"
-)
-
-// AccountsService exposes account configuration operations.
-type AccountsService struct {
-	http *httpClient
-}
-
-// ── Public endpoints ──────────────────────────────────────────────────────────
-
-// ListWalletsParams holds optional query parameters for Wallets.
-type ListWalletsParams struct {
-	Active  *bool  // filter by active flag; nil = no filter
-	Sort    string // sort fields: comma-separated, prefix with - for desc (e.g. "-created_at,label")
-	Page    int    // page number (1-based); 0 = use server default
-	PerPage int    // items per page; 0 = use server default
-}
-
-// Wallets lists the wallets (with nested tokens) for the given account. Public.
-func (s *AccountsService) Wallets(ctx context.Context, accountID string, params ...ListWalletsParams) (*PaginatedResponse[Wallet], error) {
-	var out PaginatedResponse[Wallet]
-	path := fmt.Sprintf("/accounts/%s/wallets", accountID)
-	if len(params) > 0 {
-		p := params[0]
-		q := url.Values{}
-		if p.Active != nil {
-			if *p.Active {
-				q.Set("active", "true")
-			} else {
-				q.Set("active", "false")
-			}
-		}
-		if p.Sort != "" {
-			q.Set("sort", p.Sort)
-		}
-		if p.Page > 0 {
-			q.Set("page", fmt.Sprintf("%d", p.Page))
-		}
-		if p.PerPage > 0 {
-			q.Set("per_page", fmt.Sprintf("%d", p.PerPage))
-		}
-		if len(q) > 0 {
-			path = path + "?" + q.Encode()
-		}
-	}
-	if err := s.http.get(ctx, path, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Protected endpoints (require JWT) ────────────────────────────────────────
-
-// Get fetches the account profile for the authenticated merchant.
-func (s *AccountsService) Get(ctx context.Context, accountID string) (*Account, error) {
-	var out Account
-	if err := s.http.get(ctx, fmt.Sprintf("/accounts/%s", accountID), &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// UpdateAccountRequest holds the fields the merchant can update.
-type UpdateAccountRequest struct {
-	Name  string ` + "`" + `json:"name,omitempty"` + "`" + `
-	Email string ` + "`" + `json:"email,omitempty"` + "`" + `
-}
-
-// Update patches the authenticated merchant account.
-func (s *AccountsService) Update(ctx context.Context, accountID string, req UpdateAccountRequest) (*Account, error) {
-	var out Account
-	if err := s.http.put(ctx, fmt.Sprintf("/accounts/%s", accountID), req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ListAccountPaymentsParams holds optional query parameters for account payments.
-type ListAccountPaymentsParams struct {
-	Status  string
-	Mode    string
-	Token   string
-	Payer   string
-	Sort    string // sort fields: comma-separated, prefix with - for desc (e.g. "-created_at,amount")
-	Page    int
-	PerPage int
-}
-
-// Payments lists payments where this account is the payee (requires JWT).
-func (s *AccountsService) Payments(ctx context.Context, accountID string, params ...ListAccountPaymentsParams) (*PaginatedResponse[PaymentSummary], error) {
-	var out PaginatedResponse[PaymentSummary]
-	path := fmt.Sprintf("/accounts/%s/payments", accountID)
-	if len(params) > 0 {
-		p := params[0]
-		q := url.Values{}
-		if p.Status != "" {
-			q.Set("status", p.Status)
-		}
-		if p.Mode != "" {
-			q.Set("mode", p.Mode)
-		}
-		if p.Token != "" {
-			q.Set("token", p.Token)
-		}
-		if p.Payer != "" {
-			q.Set("payer", p.Payer)
-		}
-		if p.Sort != "" {
-			q.Set("sort", p.Sort)
-		}
-		if p.Page > 0 {
-			q.Set("page", fmt.Sprintf("%d", p.Page))
-		}
-		if p.PerPage > 0 {
-			q.Set("per_page", fmt.Sprintf("%d", p.PerPage))
-		}
-		if len(q) > 0 {
-			path = path + "?" + q.Encode()
-		}
-	}
-	if err := s.http.get(ctx, path, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Wallet management (protected) ────────────────────────────────────────────
-
-// WalletsService exposes wallet and wallet-token management operations.
-type WalletsService struct {
-	http *httpClient
-}
-
-// GetWallet fetches a single wallet with nested tokens (requires JWT).
-func (s *WalletsService) Get(ctx context.Context, walletID string) (*Wallet, error) {
-	var out Wallet
-	if err := s.http.get(ctx, fmt.Sprintf("/wallets/%s", walletID), &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// CreateWalletRequest is the body for creating a new wallet.
-type CreateWalletRequest struct {
-	Address string ` + "`" + `json:"address"` + "`" + `
-	Label   string ` + "`" + `json:"label,omitempty"` + "`" + `
-}
-
-// CreateWalletResponse is returned after a wallet is created.
-type CreateWalletResponse struct {
-	ID      string ` + "`" + `json:"id"` + "`" + `
-	Address string ` + "`" + `json:"address"` + "`" + `
-	Label   string ` + "`" + `json:"label,omitempty"` + "`" + `
-	Active  bool   ` + "`" + `json:"active"` + "`" + `
-}
-
-// Create adds a new wallet to the authenticated account (requires JWT).
-func (s *WalletsService) Create(ctx context.Context, req CreateWalletRequest) (*CreateWalletResponse, error) {
-	var out CreateWalletResponse
-	if err := s.http.post(ctx, "/wallets", req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// UpdateWalletRequest holds the fields that can be patched on a wallet.
-type UpdateWalletRequest struct {
-	Label  string ` + "`" + `json:"label,omitempty"` + "`" + `
-	Active *bool  ` + "`" + `json:"active,omitempty"` + "`" + `
-}
-
-// Update patches label or active on a wallet (requires JWT).
-func (s *WalletsService) Update(ctx context.Context, walletID string, req UpdateWalletRequest) (*CreateWalletResponse, error) {
-	var out CreateWalletResponse
-	if err := s.http.put(ctx, fmt.Sprintf("/wallets/%s", walletID), req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// AddTokenRequest is the body for adding a token to a wallet.
-type AddTokenRequest struct {
-	TokenID string ` + "`" + `json:"token_id"` + "`" + `
-	Default bool   ` + "`" + `json:"default,omitempty"` + "`" + `
-}
-
-// AddToken associates a token with a wallet (requires JWT).
-func (s *WalletsService) AddToken(ctx context.Context, walletID string, req AddTokenRequest) (*WalletTokenItem, error) {
-	var out WalletTokenItem
-	if err := s.http.post(ctx, fmt.Sprintf("/wallets/%s/tokens", walletID), req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// UpdateTokenRequest holds the fields that can be patched on a wallet token.
-type UpdateTokenRequest struct {
-	Default *bool ` + "`" + `json:"default,omitempty"` + "`" + `
-	Active  *bool ` + "`" + `json:"active,omitempty"` + "`" + `
-}
-
-// UpdateToken patches a wallet token entry (requires JWT).
-func (s *WalletsService) UpdateToken(ctx context.Context, walletID, tokenID string, req UpdateTokenRequest) (*WalletTokenItem, error) {
-	var out WalletTokenItem
-	if err := s.http.put(ctx, fmt.Sprintf("/wallets/%s/tokens/%s", walletID, tokenID), req, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// RemoveToken hard-deletes a wallet token. Requires JWT.
-func (s *WalletsService) RemoveToken(ctx context.Context, walletID, tokenID string) error {
-	return s.http.delete(ctx, fmt.Sprintf("/wallets/%s/tokens/%s", walletID, tokenID), nil)
-}
-`
-
-const goPaymentsTemplate = `// Code generated by gen/generate.go — DO NOT EDIT.
-// Re-run: go run gen/generate.go
-
-package rail0
-
-import (
-	"context"
-	"fmt"
-	"net/url"
-)
-
-// PaymentsService implements the payment lifecycle operations.
-type PaymentsService struct {
-	http *httpClient
-}
-
-// ListPaymentsParams holds optional query parameters for Payments.List.
-type ListPaymentsParams struct {
-	Status  string // filter by payment status
-	Mode    string // filter by mode ("authorize" or "charge")
-	Payer   string // filter by payer Ethereum address
-	Payee   string // filter by payee Ethereum address
-	Token   string // filter by token contract address
-	Sort    string // sort fields: comma-separated, prefix with - for desc (e.g. "-created_at,amount")
-	Page    int    // page number (1-based); 0 = use server default
-	PerPage int    // items per page; 0 = use server default
-}
-
-// List returns payments for the authenticated wallet (requires JWT).
-func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams) (*PaginatedResponse[PaymentSummary], error) {
-	var out PaginatedResponse[PaymentSummary]
-	path := "/payments"
-
-	if len(params) > 0 {
-		p := params[0]
-		q := url.Values{}
-		if p.Status != "" {
-			q.Set("status", p.Status)
-		}
-		if p.Mode != "" {
-			q.Set("mode", p.Mode)
-		}
-		if p.Payer != "" {
-			q.Set("payer", p.Payer)
-		}
-		if p.Payee != "" {
-			q.Set("payee", p.Payee)
-		}
-		if p.Token != "" {
-			q.Set("token", p.Token)
-		}
-		if p.Sort != "" {
-			q.Set("sort", p.Sort)
-		}
-		if p.Page > 0 {
-			q.Set("page", fmt.Sprintf("%d", p.Page))
-		}
-		if p.PerPage > 0 {
-			q.Set("per_page", fmt.Sprintf("%d", p.PerPage))
-		}
-		if len(q) > 0 {
-			path = path + "?" + q.Encode()
-		}
-	}
-
-	if err := s.http.get(ctx, path, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Create creates a payment intent and returns the EIP-712 signingPayload for the payer to sign.
-func (s *PaymentsService) Create(ctx context.Context, params CreatePaymentRequest) (*CreatePaymentResponse, error) {
-	var out CreatePaymentResponse
-	if err := s.http.post(ctx, "/payments", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// CreatePayment is an alias for Create for backward compatibility.
-func (s *PaymentsService) CreatePayment(ctx context.Context, params CreatePaymentRequest) (*CreatePaymentResponse, error) {
-	return s.Create(ctx, params)
-}
-
-// Get fetches the current payment state (DB status + live on-chain amounts).
-func (s *PaymentsService) Get(ctx context.Context, paymentID Bytes32) (*PaymentSummary, error) {
-	var out PaymentSummary
-	if err := s.http.get(ctx, "/payments/"+paymentID, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ListTransactionsParams holds optional query parameters for Payments.Transactions.
-type ListTransactionsParams struct {
-	Operation string // filter by operation type
-	Status    string // filter by transaction status
-	Sort      string // sort fields: comma-separated, prefix with - for desc (e.g. "-submitted_at")
-	Page      int    // page number (1-based); 0 = use server default
-	PerPage   int    // items per page; 0 = use server default
-}
-
-// Transactions lists on-chain transactions for a payment.
-func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, params ...ListTransactionsParams) (*PaginatedResponse[TransactionRecord], error) {
-	var out PaginatedResponse[TransactionRecord]
-	path := fmt.Sprintf("/payments/%s/transactions", paymentID)
-
-	if len(params) > 0 {
-		p := params[0]
-		q := url.Values{}
-		if p.Operation != "" {
-			q.Set("operation", p.Operation)
-		}
-		if p.Status != "" {
-			q.Set("status", p.Status)
-		}
-		if p.Sort != "" {
-			q.Set("sort", p.Sort)
-		}
-		if p.Page > 0 {
-			q.Set("page", fmt.Sprintf("%d", p.Page))
-		}
-		if p.PerPage > 0 {
-			q.Set("per_page", fmt.Sprintf("%d", p.PerPage))
-		}
-		if len(q) > 0 {
-			path = path + "?" + q.Encode()
-		}
-	}
-
-	if err := s.http.get(ctx, path, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Sign deposits the payer's EIP-712 signature. params.Signature must be the
-// 65-byte secp256k1 signature as a 0x-prefixed 130-char hex string (r+s+v).
-func (s *PaymentsService) Sign(ctx context.Context, paymentID Bytes32, params PayerSignatureRequest) (*PayerSignatureResponse, error) {
-	var out PayerSignatureResponse
-	if err := s.http.put(ctx, "/payments/"+paymentID+"/sign", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Authorize ──────────────────────────────────────────────────────────────────
-
-// AuthorizePrepare builds the unsigned authorize() transaction.
-func (s *PaymentsService) AuthorizePrepare(ctx context.Context, paymentID Bytes32) (*PrepareTransactionResponse, error) {
-	var out PrepareTransactionResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/authorize/prepare", nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Authorize submits the signed authorize transaction for asynchronous broadcast.
-func (s *PaymentsService) Authorize(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*SubmitTransactionAcceptedResponse, error) {
-	var out SubmitTransactionAcceptedResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/authorize", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Charge ─────────────────────────────────────────────────────────────────────
-
-// ChargePrepare builds the unsigned charge() transaction (one-shot authorize+capture).
-func (s *PaymentsService) ChargePrepare(ctx context.Context, paymentID Bytes32) (*PrepareTransactionResponse, error) {
-	var out PrepareTransactionResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/charge/prepare", nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Charge submits the signed charge transaction. Poll Get until "charged".
-func (s *PaymentsService) Charge(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*SubmitTransactionAcceptedResponse, error) {
-	var out SubmitTransactionAcceptedResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/charge", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Capture ────────────────────────────────────────────────────────────────────
-
-// CapturePrepare builds the unsigned capture() transaction.
-func (s *PaymentsService) CapturePrepare(ctx context.Context, paymentID Bytes32, params CapturePaymentRequest) (*PrepareTransactionResponse, error) {
-	var out PrepareTransactionResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/capture/prepare", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Capture submits the signed capture transaction. Poll Get until "captured".
-func (s *PaymentsService) Capture(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*SubmitTransactionAcceptedResponse, error) {
-	var out SubmitTransactionAcceptedResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/capture", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Void ───────────────────────────────────────────────────────────────────────
-
-// VoidPrepare builds the unsigned void() transaction.
-func (s *PaymentsService) VoidPrepare(ctx context.Context, paymentID Bytes32) (*PrepareTransactionResponse, error) {
-	var out PrepareTransactionResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/void/prepare", nil, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Void submits the signed void transaction. Poll Get until "voided".
-func (s *PaymentsService) Void(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*SubmitTransactionAcceptedResponse, error) {
-	var out SubmitTransactionAcceptedResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/void", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Release ────────────────────────────────────────────────────────────────────
-
-// ReleasePrepare builds the unsigned release() transaction.
-func (s *PaymentsService) ReleasePrepare(ctx context.Context, paymentID Bytes32, params ReleaseRequest) (*PrepareTransactionResponse, error) {
-	var out PrepareTransactionResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/release/prepare", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Release submits the signed release transaction. Poll Get until "released".
-func (s *PaymentsService) Release(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*SubmitTransactionAcceptedResponse, error) {
-	var out SubmitTransactionAcceptedResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/release", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// ── Refund (EIP-3009) ─────────────────────────────────────────────────────────
-
-// RefundPrepare is a two-phase endpoint that builds the unsigned refund() transaction.
-func (s *PaymentsService) RefundPrepare(ctx context.Context, paymentID Bytes32, params RefundPayloadRequest) (*RefundPayloadResponse, error) {
-	var out RefundPayloadResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/refund/prepare", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Refund submits the signed refund transaction. Poll Get until "refunded".
-func (s *PaymentsService) Refund(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*SubmitTransactionAcceptedResponse, error) {
-	var out SubmitTransactionAcceptedResponse
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/refund", params, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-`
-
-const goChainsTemplate = `// Code generated by gen/generate.go — DO NOT EDIT.
-// Re-run: go run gen/generate.go
-
-package rail0
-
-import "context"
-
-// ChainsService exposes the supported blockchain catalog.
-type ChainsService struct {
-	http *httpClient
-}
-
-// Blockchain is a supported EVM chain.
-type Blockchain struct {
-	ChainID     int    ` + "`" + `json:"chain_id"` + "`" + `
-	Name        string ` + "`" + `json:"name"` + "`" + `
-	Slug        string ` + "`" + `json:"slug"` + "`" + `
-	NetworkType string ` + "`" + `json:"network_type"` + "`" + `
-	ExplorerURL string ` + "`" + `json:"explorer_url"` + "`" + `
-}
-
-// List returns all active blockchains.
-func (s *ChainsService) List(ctx context.Context) ([]Blockchain, error) {
-	var out []Blockchain
-	if err := s.http.get(ctx, "/blockchains", &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-`
-
-const goTokensTemplate = `// Code generated by gen/generate.go — DO NOT EDIT.
-// Re-run: go run gen/generate.go
-
-package rail0
-
-import (
-	"context"
-	"strconv"
-)
-
-// TokensService exposes the supported token catalog.
-type TokensService struct {
-	http *httpClient
-}
-
-// Token is a supported ERC-20 token on a specific chain.
-type Token struct {
-	ChainID   int     ` + "`" + `json:"chain_id"` + "`" + `
-	ChainSlug string  ` + "`" + `json:"chain_slug"` + "`" + `
-	Symbol    string  ` + "`" + `json:"symbol"` + "`" + `
-	Address   Address ` + "`" + `json:"address"` + "`" + `
-	Decimals  int     ` + "`" + `json:"decimals"` + "`" + `
-}
-
-// List returns all active tokens. Pass chainID > 0 to filter by chain.
-func (s *TokensService) List(ctx context.Context, chainID int) ([]Token, error) {
-	var out []Token
-	path := "/tokens"
-	if chainID > 0 {
-		path += "?chain_id=" + strconv.Itoa(chainID)
-	}
-	if err := s.http.get(ctx, path, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
 `
 
 // ================================================================
@@ -775,7 +365,7 @@ func resolveSchemaPath(rootDir string) string {
 	if p := os.Getenv("RAIL0_SCHEMA_PATH"); p != "" {
 		return p
 	}
-	return filepath.Join(rootDir, "..", "rail0-api", "docs", "openapi.json")
+	return filepath.Join(rootDir, "..", "rail0-gateway", "docs", "openapi.json")
 }
 
 func main() {
@@ -784,7 +374,6 @@ func main() {
 	rootDir := filepath.Dir(genDir)
 
 	schemaPath := resolveSchemaPath(rootDir)
-
 	fmt.Printf("Reading schema: %s\n", schemaPath)
 
 	raw, err := os.ReadFile(schemaPath)
@@ -799,7 +388,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Generate types_gen.go
 	typesPath := filepath.Join(rootDir, "types_gen.go")
 	data := buildData(api)
 	tmpl, err := template.New("types").Parse(goTypesTemplate)
@@ -807,114 +395,154 @@ func main() {
 		fmt.Fprintf(os.Stderr, "template parse error: %v\n", err)
 		os.Exit(1)
 	}
-	f, err := os.Create(typesPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error creating %s: %v\n", typesPath, err)
-		os.Exit(1)
-	}
-	if err := tmpl.Execute(f, data); err != nil {
-		f.Close()
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
 		fmt.Fprintf(os.Stderr, "template execute error: %v\n", err)
 		os.Exit(1)
 	}
-	f.Close()
+	// gofmt the output so the committed file is canonically formatted.
+	formatted, err := format.Source(buf.Bytes())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gofmt error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(typesPath, formatted, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", typesPath, err)
+		os.Exit(1)
+	}
 	fmt.Printf("Generated: %s\n", typesPath)
-
-	// Generate resource files
-	resourceFiles := map[string]string{
-		"accounts.go": goAccountsTemplate,
-		"payments.go": goPaymentsTemplate,
-		"chains.go":   goChainsTemplate,
-		"tokens.go":   goTokensTemplate,
-	}
-	for filename, content := range resourceFiles {
-		outPath := filepath.Join(rootDir, filename)
-		if err := os.WriteFile(outPath, []byte(content), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "error writing %s: %v\n", outPath, err)
-			os.Exit(1)
-		}
-		fmt.Printf("Generated: %s\n", outPath)
-	}
-
 	fmt.Println("Done.")
 }
 
-// buildData converts the OpenAPI schemas into template data.
+// fields turns a schema's properties into ordered template Fields. requiredSet
+// marks which properties are required (non-pointer, no omitempty). The schema
+// name is used to look up per-field type overrides.
+func fields(schemaName string, props map[string]*Schema, requiredSet map[string]bool) []Field {
+	names := make([]string, 0, len(props))
+	for pn := range props {
+		names = append(names, pn)
+	}
+	// Required fields first, then optional; each group alphabetical for stable output.
+	slices.SortFunc(names, func(a, b string) int {
+		aReq, bReq := requiredSet[a], requiredSet[b]
+		if aReq != bReq {
+			if aReq {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+
+	overrides := schemaTypeOverride[schemaName]
+	nameOverrides := fieldNameOverride[schemaName]
+	out := make([]Field, 0, len(names))
+	for _, pn := range names {
+		prop := props[pn]
+		optional := !requiredSet[pn]
+		_, nullable := prop.typeInfo()
+
+		ft := goType(prop)
+		if ov, ok := overrides[pn]; ok && ov != "" {
+			ft = ov
+		}
+
+		goName := exported(pn)
+		if no, ok := nameOverrides[pn]; ok && no != "" {
+			goName = no
+		}
+
+		// Convention (matches the hand-aligned client): optional/nullable fields
+		// are emitted as VALUE types with `,omitempty`, not pointers. The SDK
+		// reserves pointers for the few response fields where distinguishing
+		// "absent" from the zero value is semantically required — those are
+		// pinned explicitly via schemaTypeOverride (e.g. *Bytes32, *int).
+		_ = nullable
+		out = append(out, Field{
+			Name:    goName,
+			Type:    ft,
+			JSON:    pn,
+			Doc:     prop.Description,
+			Pointer: optional || nullable,
+		})
+	}
+	return out
+}
+
+// buildData converts the OpenAPI schemas into template data, applying the SDK
+// generation conventions (aliases, allOf merging, skips, type overrides).
 func buildData(api OpenAPI) GenData {
 	var aliases []Alias
-	var structs []Struct
+	structByName := map[string]*Struct{}
+	var order []string
 
-	// Process schemas in a stable order.
 	names := make([]string, 0, len(api.Components.Schemas))
 	for name := range api.Components.Schemas {
 		names = append(names, name)
 	}
 	slices.Sort(names)
 
+	// First pass: emit base structs and aliases (skip merge-derived and skipped).
 	for _, name := range names {
+		if skipSchemas[name] || mergeInto[name] != "" {
+			continue
+		}
 		s := api.Components.Schemas[name]
 
 		if alias, ok := primitiveAliases[name]; ok {
-			aliases = append(aliases, Alias{
-				Name: name,
-				Base: alias,
-				Doc:  s.Description,
-			})
+			aliases = append(aliases, Alias{Name: name, Base: alias, Doc: s.Description})
 			continue
 		}
 
-		if s.Type != "object" {
-			// Skip non-object, non-primitive schemas (edge case).
+		primary, _ := s.typeInfo()
+		// Skip standalone enum/string schemas (e.g. WebhookTopic): the client
+		// exposes those as string constants, not Go types.
+		if primary != "object" {
 			continue
 		}
 
-		st := Struct{Name: name, Doc: s.Description}
-
-		// Build a set for O(1) required lookup.
 		requiredSet := make(map[string]bool, len(s.Required))
 		for _, r := range s.Required {
 			requiredSet[r] = true
 		}
+		st := &Struct{Name: name, Doc: s.Description, Fields: fields(name, s.Properties, requiredSet)}
+		structByName[name] = st
+		order = append(order, name)
+	}
 
-		// Property order: required fields first, then optional, each group sorted.
-		propNames := make([]string, 0, len(s.Properties))
-		for pn := range s.Properties {
-			propNames = append(propNames, pn)
+	// Second pass: merge allOf-derived schemas into their canonical base struct.
+	for _, name := range names {
+		canon, ok := mergeInto[name]
+		if !ok {
+			continue
 		}
-		slices.SortFunc(propNames, func(a, b string) int {
-			aReq, bReq := requiredSet[a], requiredSet[b]
-			if aReq != bReq {
-				if aReq {
-					return -1
-				}
-				return 1
-			}
-			return strings.Compare(a, b)
-		})
-
-		for _, propName := range propNames {
-			prop := s.Properties[propName]
-			optional := !requiredSet[propName]
-			ft := goType(prop)
-			// For optional pointer types (non-string primitives), use pointer.
-			// Strings default to empty string which is fine for optional fields.
-			usePointer := optional && ft != "string"
-
-			fieldType := ft
-			if usePointer {
-				fieldType = "*" + ft
-			}
-
-			st.Fields = append(st.Fields, Field{
-				Name:    exported(propName),
-				Type:    fieldType,
-				JSON:    propName,
-				Doc:     prop.Description,
-				Pointer: optional,
-			})
+		derived := api.Components.Schemas[name]
+		target := structByName[canon]
+		if target == nil {
+			continue
 		}
+		for _, part := range derived.AllOf {
+			if part.Ref != "" {
+				continue // the base ref — already represented by the canonical struct
+			}
+			requiredSet := make(map[string]bool, len(part.Required))
+			for _, r := range part.Required {
+				requiredSet[r] = true
+			}
+			target.Fields = append(target.Fields, fields(canon, part.Properties, requiredSet)...)
+		}
+	}
 
-		structs = append(structs, st)
+	// Inject SDK-only extra fields.
+	for name, extras := range extraFields {
+		if st := structByName[name]; st != nil {
+			st.Fields = append(st.Fields, extras...)
+		}
+	}
+
+	structs := make([]Struct, 0, len(order))
+	for _, name := range order {
+		structs = append(structs, *structByName[name])
 	}
 
 	return GenData{
