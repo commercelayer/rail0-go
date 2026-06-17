@@ -34,14 +34,12 @@ func main() {
 	// ----------------------------------------------------------------
 
 	createResp, err := client.Payments.CreatePayment(ctx, rail0.CreatePaymentRequest{
-		Payment: rail0.PaymentInput{
-			Payer:  "0xBuyerAddress000000000000000000000000000000",
-			Payee:  "0xMerchantAddress0000000000000000000000000000",
-			Token:  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-			Amount: "50000000",
-		},
-		ChainId: 8453,
+		ChainID: 8453,
 		Mode:    "authorize",
+		Amount:  "50.00",
+		Token:   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+		Payer:   "0xBuyerAddress000000000000000000000000000000",
+		Payee:   "0xMerchantAddress0000000000000000000000000000",
 	})
 	if err != nil {
 		log.Fatalf("CreatePayment: %v", err)
@@ -82,15 +80,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("Authorize: %v", err)
 	}
-	fmt.Printf("Authorize enqueued: id=%s status=%s\n", authSubmit.Rail0Id, authSubmit.Status)
+	fmt.Printf("Authorize enqueued: tx=%s status=%s\n", authSubmit.ID, authSubmit.Status)
 	// poll until status == "authorized": client.Payments.Get(ctx, createResp.Rail0Id)
 
 	// ----------------------------------------------------------------
 	// Step 4 — Payee prepares and submits a capture transaction
 	// ----------------------------------------------------------------
 
-	capturePayload, err := client.Payments.CapturePrepare(ctx, createResp.Rail0Id,
-		rail0.CapturePaymentRequest{Amount: "50000000"})
+	capturePayload, err := client.Payments.CapturePrepare(ctx, createResp.Rail0Id, "50.00")
 	if err != nil {
 		log.Fatalf("CapturePayload: %v", err)
 	}
@@ -107,5 +104,5 @@ func main() {
 		}
 		log.Fatalf("Capture: %v", err)
 	}
-	fmt.Printf("Capture enqueued: id=%s status=%s\n", captureSubmit.Rail0Id, captureSubmit.Status)
+	fmt.Printf("Capture enqueued: tx=%s status=%s\n", captureSubmit.ID, captureSubmit.Status)
 }

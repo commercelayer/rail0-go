@@ -23,21 +23,18 @@ client := rail0.NewClient(rail0.ClientOptions{
 })
 ctx := context.Background()
 
-// Discover the account's wallets and pick a payment method
+// Discover the account's wallet-token rows and pick a payment method
 wallets, _ := client.Accounts.Wallets(ctx, "account-uuid")
-w := wallets.Data[0]
-token := w.Tokens[0]
+wt := wallets.Data[0]
 
-// Create a payment intent
+// Create a payment (flat params)
 resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
-    Payment: rail0.PaymentInput{
-        Payer:  "0xBuyer...",
-        Payee:  w.Address,
-        Token:  token.TokenAddress,
-        Amount: "50000000", // 50 USDC (6 decimals)
-    },
-    ChainId: token.ChainID,
+    ChainID: wt.ChainID,
     Mode:    "authorize",
+    Amount:  "50.00", // human decimal amount
+    Token:   wt.TokenAddress,
+    Payer:   "0xBuyer...",
+    Payee:   wt.Address,
 })
 ```
 
@@ -45,61 +42,75 @@ resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 
 | Service | Description |
 |---------|-------------|
-| `client.Accounts` | Account profile, wallet listing, merchant payments |
-| `client.Wallets` | Wallet and wallet-token management (requires JWT) |
-| `client.Payments` | Full payment lifecycle |
 | `client.Auth` | SIWE authentication |
-| `client.Chains` | Blockchain catalog |
-| `client.Tokens` | Token catalog |
+| `client.Health` | Gateway health check |
+| `client.Chains` | Public blockchain catalog |
+| `client.Tokens` | Public token catalog |
+| `client.Accounts` | Wallet management under `/accounts/:id/wallets` (JWT) |
+| `client.Payments` | Full payment lifecycle |
+| `client.Webhooks` | Webhook subscription management (JWT) |
 
-## Accounts
+## Authentication (SIWE)
 
 ```go
-// Public — list wallets with nested tokens
-wallets, _ := client.Accounts.Wallets(ctx, accountID, rail0.ListWalletsParams{
-    Sort:    "-created_at",
-    PerPage: 50,
-})
+// 1. Get a nonce (POST /auth/nonces)
+nonce, _ := client.Auth.GetNonce(ctx)
+_ = nonce.Value // embed in the SIWE message
 
-// Protected — account profile
-account, _ := client.Accounts.Get(ctx, accountID)
-
-// Protected — update profile
-account, _ := client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
-    Email: "new@example.com",
+// 2. Build + sign the EIP-4361 message, then verify (POST /auth)
+resp, _ := client.Auth.Verify(ctx, rail0.AuthRequest{
+    Message:   siweMessage,
+    Signature: "0x...",
 })
+// resp.Token — include as Authorization: Bearer <token>
 
-// Protected — payments where this account is payee
-payments, _ := client.Accounts.Payments(ctx, accountID, rail0.ListAccountPaymentsParams{
-    Status: "authorized",
-    Sort:   "-created_at,amount",
-})
+// Or do the whole flow with a raw private key:
+resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
 ```
 
-## Wallets (protected)
+## Catalog (public)
 
 ```go
-// List wallets with tokens
-wallet, _ := client.Wallets.Get(ctx, walletID)
+chains, _ := client.Chains.List(ctx)        // GET /blockchains
+tokens, _ := client.Tokens.List(ctx, 8453)  // GET /tokens?chain_id=8453
+```
 
-// Create
-w, _ := client.Wallets.Create(ctx, rail0.CreateWalletRequest{
+## Health
+
+```go
+h, _ := client.Health.Get(ctx) // GET /health
+fmt.Println(h.Status, h.ActiveChains)
+```
+
+## Wallets (under accounts, JWT)
+
+The list and single-get endpoints return wallet-token join rows
+(`rail0.WalletToken`); create and update return the plain `rail0.Wallet`.
+
+```go
+// List wallet-token rows with filters
+active := true
+wallets, _ := client.Accounts.Wallets(ctx, accountID, rail0.ListWalletsParams{
+    ChainID:     8453,
+    TokenSymbol: "USDC",
+    Active:      &active,
+    Sort:        "-created_at",
+})
+
+// Get a single wallet-token row
+wt, _ := client.Accounts.GetWallet(ctx, accountID, walletTokenID)
+
+// Create a wallet
+w, _ := client.Accounts.CreateWallet(ctx, accountID, rail0.CreateWalletRequest{
     Address: "0xABC...",
     Label:   "Treasury",
 })
 
-// Update
-client.Wallets.Update(ctx, walletID, rail0.UpdateWalletRequest{Label: "Main"})
+// Update a wallet (label / active)
+client.Accounts.UpdateWallet(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Main"})
 
-// Add a token
-client.Wallets.AddToken(ctx, walletID, rail0.AddTokenRequest{TokenID: tokenID})
-
-// Update a token
-active := false
-client.Wallets.UpdateToken(ctx, walletID, tokenID, rail0.UpdateTokenRequest{Active: &active})
-
-// Remove a token (hard delete)
-client.Wallets.RemoveToken(ctx, walletID, tokenID)
+// Delete a wallet
+client.Accounts.DeleteWallet(ctx, accountID, w.ID)
 ```
 
 ## Payments
@@ -111,29 +122,72 @@ payments, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{
     Sort:   "-created_at",
 })
 
-// Get
+// Get (embeds transactions)
 p, _ := client.Payments.Get(ctx, rail0ID)
 
-// Create
-resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{...})
+// Create — optional idempotency key replays the existing payment on retry
+resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
+    ChainID: 8453, Mode: "authorize", Amount: "50.00",
+    Token: "0x...", Payer: "0x...", Payee: "0x...",
+}, "idempotency-key-123")
 
 // Submit payer signature
 client.Payments.Sign(ctx, rail0ID, rail0.PayerSignatureRequest{Signature: "0x..."})
 
-// Authorize → Capture
+// Authorize → Capture (each prepare returns a pending Transaction)
 tx, _ := client.Payments.AuthorizePrepare(ctx, rail0ID)
 // sign tx.UnsignedTransaction → signedBytes
 client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
-tx, _ = client.Payments.CapturePrepare(ctx, rail0ID, rail0.CapturePaymentRequest{Amount: "50000000"})
-// sign → signedBytes
+tx, _ = client.Payments.CapturePrepare(ctx, rail0ID, "50.00")
 client.Payments.Capture(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
+// Refund is two-phase. Phase 1 (omit signature) returns a Transaction whose
+// SigningPayload the payee signs; phase 2 supplies the signature.
+ph1, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00"})
+_ = ph1.SigningPayload
+ph2, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00", Signature: "0x..."})
+// sign ph2.UnsignedTransaction → signedBytes
+client.Payments.Refund(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
+
+// Generic op helpers also exist:
+client.Payments.Prepare(ctx, rail0ID, rail0.OpVoid)
+client.Payments.Submit(ctx, rail0ID, rail0.OpVoid, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
+
 // Transactions for a payment
-txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{
-    Sort: "-submitted_at",
-})
+txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{Sort: "-submitted_at"})
 ```
+
+## Webhooks (JWT)
+
+```go
+// Create — response includes the one-time SharedSecret
+wh, _ := client.Webhooks.Create(ctx, rail0.CreateWebhookRequest{
+    Name: "orders", CallbackURL: "https://example.com/hook", Topic: rail0.TopicPaymentsCaptured,
+})
+secret := wh.SharedSecret
+
+// List with filters
+active := true
+hooks, _ := client.Webhooks.List(ctx, rail0.ListWebhooksParams{Topic: rail0.TopicPaymentsFailed, Active: &active})
+
+// Lifecycle
+client.Webhooks.Update(ctx, wh.ID, rail0.UpdateWebhookRequest{Name: "renamed"})
+client.Webhooks.Disable(ctx, wh.ID)
+client.Webhooks.Enable(ctx, wh.ID)
+client.Webhooks.ResetCircuit(ctx, wh.ID)
+rotated, _ := client.Webhooks.RotateSecret(ctx, wh.ID) // rotated.SharedSecret
+
+// Delivery attempts
+cbs, _ := client.Webhooks.EventCallbacks(ctx, wh.ID, rail0.ListEventCallbacksParams{Status: "failed"})
+
+client.Webhooks.Delete(ctx, wh.ID)
+```
+
+Topics: `payments.created`, `payments.signed`, `payments.authorized`,
+`payments.charged`, `payments.captured`, `payments.voided`,
+`payments.released`, `payments.refunded`, `payments.failed`
+(also available as `rail0.TopicPayments*` constants).
 
 ## Sorting
 
@@ -142,27 +196,6 @@ List endpoints accept a `Sort` field using JSON:API convention:
 - `"created_at"` — ascending
 - `"-created_at"` — descending
 - `"-created_at,amount"` — multiple fields, left-to-right priority
-
-| Method | Allowed sort fields |
-|--------|-------------------|
-| `Accounts.Wallets` | `created_at`, `label`, `address` |
-| `Accounts.Payments` | `created_at`, `amount`, `status`, `authorization_expiry` |
-| `Payments.List` | `created_at`, `amount`, `status`, `authorization_expiry` |
-| `Payments.Transactions` | `submitted_at`, `confirmed_at`, `operation` |
-
-## Authentication (SIWE)
-
-```go
-// 1. Get a nonce
-nonce, _ := client.Auth.GetNonce(ctx)
-
-// 2. Build + sign the EIP-4361 message with your wallet, then:
-resp, _ := client.Auth.Verify(ctx, rail0.VerifyRequest{
-    Message:   siweMessage,
-    Signature: "0x...",
-})
-// resp.Token — include as Authorization: Bearer <token>
-```
 
 ## Configuration
 
@@ -193,11 +226,12 @@ if err != nil {
 
 ```bash
 go test ./...
-
-# Regenerate after an API schema change:
-RAIL0_SCHEMA_PATH=../rail0-api/docs/openapi.json go run gen/generate.go
 go build ./...
 ```
+
+> Note: the files under `gen/` plus `types_gen.go` were originally generated
+> from an OpenAPI document in the (now out-of-scope) `rail0-api` repo. Until the
+> gateway publishes an OpenAPI document again, `types_gen.go` is hand-maintained.
 
 ## License
 

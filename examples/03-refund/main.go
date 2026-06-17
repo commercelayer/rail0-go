@@ -17,29 +17,27 @@ func main() {
 
 	paymentID := "0x..." // a captured payment
 
-	// ── Phase 1: get the EIP-3009 signing payload ──────────────────────────────
-	phase1, err := client.Payments.RefundPrepare(ctx, paymentID, rail0.RefundPayloadRequest{
-		Amount: "50000000",
+	// ── Phase 1: get the EIP-3009 signing payload (omit signature) ──────────────
+	phase1, err := client.Payments.RefundPrepare(ctx, paymentID, rail0.PrepareRequest{
+		Amount: "50.00",
 	})
 	if err != nil {
-		log.Fatalf("RefundPayload phase 1: %v", err)
+		log.Fatalf("RefundPrepare phase 1: %v", err)
 	}
 	// phase1.SigningPayload contains the EIP-712 typed-data the payee must sign
-	// using eth_signTypedData_v4 or rail0.SignRefund (when available).
+	// using eth_signTypedData_v4 or rail0.SignReceiveWithAuthorization.
 	fmt.Printf("Signing payload nonce: %s\n", phase1.SigningPayload.Message.Nonce)
 
-	// Payee signs the payload → v, r, s
-	v, r, s := 27, "0xabc...", "0xdef..."
+	// Payee signs the payload → 0x-prefixed 65-byte signature
+	signature := "0x" + "ab" // placeholder
 
 	// ── Phase 2: build the unsigned refund() tx with EIP-3009 sig embedded ────
-	phase2, err := client.Payments.RefundPrepare(ctx, paymentID, rail0.RefundPayloadRequest{
-		Amount: "50000000",
-		V:      v,
-		R:      r,
-		S:      s,
+	phase2, err := client.Payments.RefundPrepare(ctx, paymentID, rail0.PrepareRequest{
+		Amount:    "50.00",
+		Signature: signature,
 	})
 	if err != nil {
-		log.Fatalf("RefundPayload phase 2: %v", err)
+		log.Fatalf("RefundPrepare phase 2: %v", err)
 	}
 	fmt.Printf("Unsigned refund tx: %s\n", phase2.UnsignedTransaction)
 
@@ -52,6 +50,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Refund: %v", err)
 	}
-	fmt.Printf("Refund enqueued: id=%s status=%s\n", refundSubmit.Rail0Id, refundSubmit.Status)
+	fmt.Printf("Refund enqueued: tx=%s status=%s\n", refundSubmit.ID, refundSubmit.Status)
 	// poll until status == "refunded": client.Payments.Get(ctx, paymentID)
 }

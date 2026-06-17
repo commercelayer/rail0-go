@@ -128,11 +128,27 @@ func (c *httpClient) put(ctx context.Context, path string, body any, out any) er
 	return c.do(ctx, http.MethodPut, path, body, out)
 }
 
+func (c *httpClient) patch(ctx context.Context, path string, body any, out any) error {
+	return c.do(ctx, http.MethodPatch, path, body, out)
+}
+
+// postWithHeaders issues a POST with per-request headers merged over the client
+// defaults. Used for one-off headers such as Idempotency-Key.
+func (c *httpClient) postWithHeaders(ctx context.Context, path string, body any, out any, headers map[string]string) error {
+	return c.doWithHeaders(ctx, http.MethodPost, path, body, out, headers)
+}
+
 func (c *httpClient) delete(ctx context.Context, path string, out any) error {
 	return c.do(ctx, http.MethodDelete, path, nil, out)
 }
 
 func (c *httpClient) do(ctx context.Context, method, path string, body any, out any) error {
+	return c.doWithHeaders(ctx, method, path, body, out, nil)
+}
+
+// doWithHeaders is the core request loop. extraHeaders are merged over the
+// client's default headers for this single request only.
+func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extraHeaders map[string]string) error {
 	url := c.baseURL + path
 	maxAttempts := c.maxRetries + 1
 	trackAttempts := c.maxRetries > 0
@@ -165,6 +181,9 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any, out 
 			return fmt.Errorf("rail0: build request: %w", err)
 		}
 		for k, v := range c.headers {
+			req.Header.Set(k, v)
+		}
+		for k, v := range extraHeaders {
 			req.Header.Set(k, v)
 		}
 

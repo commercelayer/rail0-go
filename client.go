@@ -8,18 +8,20 @@ package rail0
 
 // Client is the entry point for the RAIL0 SDK.
 type Client struct {
-	// Accounts exposes account profile and public wallet listing.
+	// Accounts exposes account wallet management under /accounts/:id/wallets (JWT).
 	Accounts *AccountsService
-	// Wallets exposes wallet and wallet-token management (requires JWT).
-	Wallets *WalletsService
-	// Auth exposes SIWE authentication: GetNonce, Verify.
+	// Auth exposes SIWE authentication: GetNonce, Verify, Login.
 	Auth *AuthService
-	// Chains exposes the supported blockchain catalog.
+	// Chains exposes the public blockchain catalog.
 	Chains *ChainsService
-	// Tokens exposes the supported token catalog.
+	// Tokens exposes the public token catalog.
 	Tokens *TokensService
 	// Payments exposes the full payment lifecycle.
 	Payments *PaymentsService
+	// Webhooks exposes webhook subscription management (JWT).
+	Webhooks *WebhooksService
+	// Health exposes the gateway liveness/readiness check.
+	Health *HealthService
 }
 
 // NewClient creates a new Client with the provided options.
@@ -27,10 +29,11 @@ func NewClient(opts ClientOptions) *Client {
 	h := newHTTPClient(opts)
 	return &Client{
 		Accounts: &AccountsService{http: h},
-		Wallets:  &WalletsService{http: h},
 		Auth:     &AuthService{http: h},
 		Chains:   &ChainsService{http: h},
 		Tokens:   &TokensService{http: h},
 		Payments: &PaymentsService{http: h},
+		Webhooks: &WebhooksService{http: h},
+		Health:   &HealthService{http: h},
 	}
 }
