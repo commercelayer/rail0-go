@@ -2,8 +2,7 @@
 
 Working instructions for Claude Code in this repository. This file carries the
 project-wide rules (shared across the whole rail0 project) followed by a
-Go-SDK-specific section. The project-wide rules also live in the root
-`CLAUDE.md` one directory up; keep the two in sync.
+Go-SDK-specific section. The same project-wide rules are duplicated in every per-repo CLAUDE.md; keep them consistent.
 
 ## Project structure
 
