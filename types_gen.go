@@ -55,6 +55,7 @@ type Payment struct {
 	// Protocol-level identifier (66-char hex).
 	Rail0Id      Bytes32 `json:"rail0_id,omitempty"`
 	RefundExpiry int64   `json:"refund_expiry,omitempty"`
+	Disputed     bool    `json:"disputed,omitempty"`
 	Status       string  `json:"status,omitempty"`
 	Token        Address `json:"token,omitempty"`
 	UpdatedAt    string  `json:"updated_at,omitempty"`
@@ -64,6 +65,20 @@ type Payment struct {
 	// EIP-3009 payload the payer must sign; present only when the payment is unsigned (may be null on transient RPC failure).
 	SigningPayload *SigningPayload `json:"signing_payload,omitempty"`
 	Transactions   []Transaction   `json:"transactions,omitempty"`
+}
+
+// Dispute Buyer-driven, signal-only dispute lifecycle (no fund effect).
+type Dispute struct {
+	ID          string  `json:"id,omitempty"`
+	PaymentID   string  `json:"payment_id,omitempty"`
+	Status      string  `json:"status,omitempty"`
+	Reason      Bytes32 `json:"reason,omitempty"`
+	OpenedBlock *int    `json:"opened_block,omitempty"`
+	OpenedAt    string  `json:"opened_at,omitempty"`
+	ClosedBy    string  `json:"closed_by,omitempty"`
+	CloseReason Bytes32 `json:"close_reason,omitempty"`
+	ClosedBlock *int    `json:"closed_block,omitempty"`
+	ClosedAt    string  `json:"closed_at,omitempty"`
 }
 
 // SyncBlockchain Per-chain indexer config.

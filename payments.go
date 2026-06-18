@@ -253,3 +253,49 @@ func (s *PaymentsService) RefundPrepare(ctx context.Context, paymentID Bytes32, 
 func (s *PaymentsService) Refund(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*Transaction, error) {
 	return s.Submit(ctx, paymentID, OpRefund, params)
 }
+
+// ── Disputes (buyer-driven, signal-only) ────────────────────────────────────
+
+// DisputePrepareResult is returned by the dispute prepare endpoints: the
+// unsigned transaction for the payer to sign and broadcast, plus the bytes32
+// reason code that was encoded.
+type DisputePrepareResult struct {
+	UnsignedTransaction map[string]any `json:"unsigned_transaction"`
+	Reason              string         `json:"reason"`
+}
+
+// DisputePrepare builds the unsigned dispute() transaction (payer only).
+// reason is an optional bytes32 code (0x…); defaults to zero server-side.
+func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*DisputePrepareResult, error) {
+	body := map[string]any{}
+	if len(reason) > 0 && reason[0] != "" {
+		body["reason"] = reason[0]
+	}
+	var out DisputePrepareResult
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/prepare", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CloseDisputePrepare builds the unsigned closeDispute() transaction (payer only).
+func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*DisputePrepareResult, error) {
+	body := map[string]any{}
+	if len(reason) > 0 && reason[0] != "" {
+		body["reason"] = reason[0]
+	}
+	var out DisputePrepareResult
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close/prepare", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Disputes lists a payment's dispute open/close history.
+func (s *PaymentsService) Disputes(ctx context.Context, paymentID Bytes32) ([]Dispute, error) {
+	var out []Dispute
+	if err := s.http.get(ctx, "/payments/"+paymentID+"/disputes", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
