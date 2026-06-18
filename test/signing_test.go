@@ -38,8 +38,6 @@ var testPayment = rail0.PaymentConfig{
 	Amount:              "100000000",
 	AuthorizationExpiry: 9999999999,
 	RefundExpiry:        9999999999 + 60*60*24*7,
-	FeeBps:              0,
-	FeeReceiver:         "0x0000000000000000000000000000000000000000",
 }
 
 // ================================================================

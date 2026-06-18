@@ -16,13 +16,18 @@ type AuthService struct {
 	http *httpClient
 }
 
-// NonceResponse is returned by GetNonce.
+// NonceResponse is returned by GetNonce (POST /auth/nonces). The single-use nonce
+// value to embed in the SIWE message is carried in Value.
 type NonceResponse struct {
-	Nonce     string `json:"nonce"`
+	ID        string `json:"id"`
+	Value     string `json:"value"`
 	ExpiresAt string `json:"expires_at"`
+	Used      bool   `json:"used"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
-// AuthRequest is the body for Verify.
+// AuthRequest is the body for Verify (POST /auth).
 type AuthRequest struct {
 	Message   string `json:"message"`
 	Signature string `json:"signature"`
@@ -36,10 +41,10 @@ type AuthResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
-// GetNonce issues a single-use SIWE nonce from the API (POST /nonces).
+// GetNonce issues a single-use SIWE nonce from the API (POST /auth/nonces).
 func (s *AuthService) GetNonce(ctx context.Context) (*NonceResponse, error) {
 	var out NonceResponse
-	if err := s.http.post(ctx, "/nonces", struct{}{}, &out); err != nil {
+	if err := s.http.post(ctx, "/auth/nonces", struct{}{}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -73,7 +78,7 @@ func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain strin
 		return nil, fmt.Errorf("rail0: derive address: %w", err)
 	}
 
-	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonceResp.Nonce, map[string]interface{}{
+	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonceResp.Value, map[string]interface{}{
 		"chainId":   1,
 		"statement": "Sign in to RAIL0",
 	})

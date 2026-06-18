@@ -141,11 +141,13 @@ func newTestServer(t *testing.T) *rail0.Client {
 
 const integrationPaymentID = "0x1111111111111111111111111111111111111111111111111111111111111111"
 
-var integrationPayment = rail0.PaymentInput{
-	Payer:  "0xBuyerAddress0000000000000000000000000000",
-	Payee:  "0xMerchantAddress00000000000000000000000000",
-	Token:  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-	Amount: "100000000",
+var integrationPayment = rail0.CreatePaymentRequest{
+	ChainID: 8453,
+	Mode:    "authorize",
+	Amount:  "100.00",
+	Token:   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+	Payer:   "0xBuyerAddress0000000000000000000000000000",
+	Payee:   "0xMerchantAddress00000000000000000000000000",
 }
 
 const integrationSignature = "0xabababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
@@ -156,11 +158,7 @@ const integrationSignature = "0xabababababababababababababababababababababababab
 
 func TestIntegration_CreatePayment(t *testing.T) {
 	client := newTestServer(t)
-	res, err := client.Payments.CreatePayment(context.Background(), rail0.CreatePaymentRequest{
-		Payment: integrationPayment,
-		ChainId: 8453,
-		Mode:    "authorize",
-	})
+	res, err := client.Payments.CreatePayment(context.Background(), integrationPayment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,9 +233,7 @@ func TestIntegration_Charge(t *testing.T) {
 
 func TestIntegration_CapturePrepare(t *testing.T) {
 	client := newTestServer(t)
-	res, err := client.Payments.CapturePrepare(context.Background(), integrationPaymentID, rail0.CapturePaymentRequest{
-		Amount: "50000000",
-	})
+	res, err := client.Payments.CapturePrepare(context.Background(), integrationPaymentID, "50000000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +281,7 @@ func TestIntegration_Void(t *testing.T) {
 
 func TestIntegration_ReleasePrepare(t *testing.T) {
 	client := newTestServer(t)
-	res, err := client.Payments.ReleasePrepare(context.Background(), integrationPaymentID, rail0.ReleaseRequest{})
+	res, err := client.Payments.ReleasePrepare(context.Background(), integrationPaymentID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +305,7 @@ func TestIntegration_Release(t *testing.T) {
 
 func TestIntegration_RefundPrepare(t *testing.T) {
 	client := newTestServer(t)
-	res, err := client.Payments.RefundPrepare(context.Background(), integrationPaymentID, rail0.RefundPayloadRequest{
+	res, err := client.Payments.RefundPrepare(context.Background(), integrationPaymentID, rail0.PrepareRequest{
 		Amount: "10000000",
 	})
 	if err != nil {
