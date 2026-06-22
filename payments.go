@@ -4,13 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 )
-
-// rail0IDPattern matches a logical rail0_id: a 0x-prefixed 32-byte hex hash.
-// Anything else (e.g. a UUID) is treated as the technical primary key.
-var rail0IDPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{64}$`)
 
 // PaymentsService implements the payment lifecycle operations.
 type PaymentsService struct {
@@ -38,25 +33,6 @@ type ListPaymentsParams struct {
 	Sort    string // sort fields: comma-separated, prefix with - for desc
 	Page    int    // page number (1-based); 0 = use server default
 	PerPage int    // items per page; 0 = use server default
-}
-
-// ResolvePaymentID returns the technical UUID for a payment given either its
-// UUID or its logical rail0_id (0x-prefixed 32-byte hash). Path operations
-// address payments by UUID; a rail0_id — what users know — is resolved through
-// the list filter (requires JWT). A value that is not a rail0_id is returned
-// unchanged, so callers can pass whichever identifier they hold.
-func (s *PaymentsService) ResolvePaymentID(ctx context.Context, idOrRail0 string) (Bytes32, error) {
-	if !rail0IDPattern.MatchString(idOrRail0) {
-		return idOrRail0, nil
-	}
-	res, err := s.List(ctx, ListPaymentsParams{Rail0ID: idOrRail0, PerPage: 1})
-	if err != nil {
-		return "", err
-	}
-	if len(res.Data) == 0 {
-		return "", fmt.Errorf("rail0: no payment found for rail0_id %s", idOrRail0)
-	}
-	return res.Data[0].ID, nil
 }
 
 // List returns payments for the authenticated account (requires JWT).
