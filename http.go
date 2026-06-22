@@ -120,6 +120,16 @@ func (c *httpClient) get(ctx context.Context, path string, out any) error {
 	return c.do(ctx, http.MethodGet, path, nil, out)
 }
 
+// getList issues a GET for a collection endpoint and returns the response
+// headers alongside decoding the body. List endpoints return a bare JSON array
+// with pagination carried in X-Total-Count / X-Page / X-Per-Page headers (not a
+// JSON envelope), so callers read the meta from the returned headers.
+func (c *httpClient) getList(ctx context.Context, path string, out any) (http.Header, error) {
+	var hdr http.Header
+	err := c.doWithHeaders(ctx, http.MethodGet, path, nil, out, nil, &hdr)
+	return hdr, err
+}
+
 func (c *httpClient) post(ctx context.Context, path string, body any, out any) error {
 	return c.do(ctx, http.MethodPost, path, body, out)
 }
@@ -135,7 +145,7 @@ func (c *httpClient) patch(ctx context.Context, path string, body any, out any) 
 // postWithHeaders issues a POST with per-request headers merged over the client
 // defaults. Used for one-off headers such as Idempotency-Key.
 func (c *httpClient) postWithHeaders(ctx context.Context, path string, body any, out any, headers map[string]string) error {
-	return c.doWithHeaders(ctx, http.MethodPost, path, body, out, headers)
+	return c.doWithHeaders(ctx, http.MethodPost, path, body, out, headers, nil)
 }
 
 func (c *httpClient) delete(ctx context.Context, path string, out any) error {
@@ -143,12 +153,12 @@ func (c *httpClient) delete(ctx context.Context, path string, out any) error {
 }
 
 func (c *httpClient) do(ctx context.Context, method, path string, body any, out any) error {
-	return c.doWithHeaders(ctx, method, path, body, out, nil)
+	return c.doWithHeaders(ctx, method, path, body, out, nil, nil)
 }
 
 // doWithHeaders is the core request loop. extraHeaders are merged over the
 // client's default headers for this single request only.
-func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extraHeaders map[string]string) error {
+func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extraHeaders map[string]string, respHeader *http.Header) error {
 	url := c.baseURL + path
 	maxAttempts := c.maxRetries + 1
 	trackAttempts := c.maxRetries > 0
@@ -238,6 +248,9 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 			return apiErr
 		}
 
+		if respHeader != nil {
+			*respHeader = resp.Header
+		}
 		if out != nil && len(raw) > 0 {
 			if err := json.Unmarshal(raw, out); err != nil {
 				return fmt.Errorf("rail0: decode response: %w", err)

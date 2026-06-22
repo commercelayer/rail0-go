@@ -3,6 +3,7 @@ package rail0
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -35,9 +36,11 @@ type ListPaymentsParams struct {
 	PerPage int    // items per page; 0 = use server default
 }
 
-// List returns payments for the authenticated account (requires JWT).
+// List returns payments for the authenticated account (requires JWT). The
+// gateway returns a bare JSON array with pagination in response headers, so the
+// data is decoded from the body and Meta is read from X-Total-Count / X-Page /
+// X-Per-Page.
 func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams) (*PaginatedResponse[Payment], error) {
-	var out PaginatedResponse[Payment]
 	path := "/payments"
 	if len(params) > 0 {
 		p := params[0]
@@ -73,10 +76,23 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 			path = path + "?" + q.Encode()
 		}
 	}
-	if err := s.http.get(ctx, path, &out); err != nil {
+	var data []Payment
+	hdr, err := s.http.getList(ctx, path, &data)
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &PaginatedResponse[Payment]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
+}
+
+// pageMetaFromHeaders reads the pagination meta the gateway returns as response
+// headers on collection endpoints (bare-array body).
+func pageMetaFromHeaders(h http.Header) PageMeta {
+	atoi := func(s string) int { n, _ := strconv.Atoi(s); return n }
+	return PageMeta{
+		Page:    atoi(h.Get("X-Page")),
+		PerPage: atoi(h.Get("X-Per-Page")),
+		Total:   atoi(h.Get("X-Total-Count")),
+	}
 }
 
 // Create creates a payment (POST /payments). Pass an idempotencyKey to make the
