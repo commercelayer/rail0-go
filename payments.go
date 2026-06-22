@@ -274,38 +274,54 @@ func (s *PaymentsService) Refund(ctx context.Context, paymentID Bytes32, params 
 	return s.Submit(ctx, paymentID, OpRefund, params)
 }
 
-// ── Disputes (buyer-driven, signal-only) ────────────────────────────────────
+// ── Disputes (payer-driven, signal-only) ────────────────────────────────────
+//
+// Disputes follow the same prepare → submit lifecycle as the other operations:
+// prepare returns a pending Transaction with the unsigned tx; the payer signs it
+// and submits the signed raw tx, which the gateway broadcasts. The on-chain
+// event then flips the payment's `disputed` flag.
 
-// DisputePrepareResult is returned by the dispute prepare endpoints: the
-// unsigned transaction for the payer to sign and broadcast, plus the bytes32
-// reason code that was encoded.
-type DisputePrepareResult struct {
-	UnsignedTransaction map[string]any `json:"unsigned_transaction"`
-	Reason              string         `json:"reason"`
-}
-
-// DisputePrepare builds the unsigned dispute() transaction (payer only).
-// reason is an optional bytes32 code (0x…); defaults to zero server-side.
-func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*DisputePrepareResult, error) {
+// disputeBody builds the optional {reason} payload for the dispute prepares.
+func disputeBody(reason ...string) map[string]any {
 	body := map[string]any{}
 	if len(reason) > 0 && reason[0] != "" {
 		body["reason"] = reason[0]
 	}
-	var out DisputePrepareResult
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/prepare", body, &out); err != nil {
+	return body
+}
+
+// DisputePrepare builds the unsigned dispute() transaction (payer only).
+// reason is an optional bytes32 code (0x…); defaults to zero server-side.
+func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/prepare", disputeBody(reason...), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Dispute submits the signed dispute transaction (payer only).
+func (s *PaymentsService) Dispute(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute", params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 // CloseDisputePrepare builds the unsigned closeDispute() transaction (payer only).
-func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*DisputePrepareResult, error) {
-	body := map[string]any{}
-	if len(reason) > 0 && reason[0] != "" {
-		body["reason"] = reason[0]
+func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close/prepare", disputeBody(reason...), &out); err != nil {
+		return nil, err
 	}
-	var out DisputePrepareResult
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close/prepare", body, &out); err != nil {
+	return &out, nil
+}
+
+// CloseDispute submits the signed close-dispute transaction (payer only).
+func (s *PaymentsService) CloseDispute(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close", params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
