@@ -93,8 +93,8 @@ func TestWallets_ListWithFilters(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
 		"data": []any{map[string]any{
-			"id": "wt_1", "wallet_id": "w_1", "address": "0xabc",
-			"token_symbol": "USDC", "chain_id": 8453, "active": true,
+			"id": "wt_1", "active": true,
+			"token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xtok"},
 		}},
 		"meta": map[string]any{"page": 1, "per_page": 20, "total": 1},
 	}))
@@ -115,14 +115,16 @@ func TestWallets_ListWithFilters(t *testing.T) {
 	if q.Get("chain_id") != "8453" || q.Get("token_symbol") != "USDC" || q.Get("active") != "true" {
 		t.Errorf("query: got %s", req.URL.RawQuery)
 	}
-	if len(res.Data) != 1 || res.Data[0].TokenSymbol != "USDC" {
+	if len(res.Data) != 1 || res.Data[0].Token.Symbol != "USDC" {
 		t.Errorf("unexpected data: %+v", res.Data)
 	}
 }
 
 func TestWallets_GetSingle(t *testing.T) {
 	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{"id": "wt_1", "wallet_id": "w_1", "token_symbol": "USDC"}))
+	mt.push(jsonResp(200, map[string]any{
+		"id": "wt_1", "wallet": map[string]any{"id": "w_1"}, "token": map[string]any{"symbol": "USDC"},
+	}))
 	client := newMockClient(t, mt)
 
 	res, err := client.Accounts.GetWallet(context.Background(), "acc_1", "wt_1")
@@ -132,8 +134,8 @@ func TestWallets_GetSingle(t *testing.T) {
 	if mt.recorded[0].URL.Path != "/accounts/acc_1/wallets/wt_1" {
 		t.Errorf("path: got %s", mt.recorded[0].URL.Path)
 	}
-	if res.WalletID != "w_1" {
-		t.Errorf("wallet_id: got %s", res.WalletID)
+	if res.Wallet.ID != "w_1" {
+		t.Errorf("wallet id: got %s", res.Wallet.ID)
 	}
 }
 
