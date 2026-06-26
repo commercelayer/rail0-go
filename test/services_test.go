@@ -123,19 +123,20 @@ func TestWallets_ListWithFilters(t *testing.T) {
 func TestWallets_GetSingle(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
-		"id": "wt_1", "wallet": map[string]any{"id": "w_1"}, "token": map[string]any{"symbol": "USDC"},
+		"id": "w_1", "account_id": "acc_1", "address": "0xabc", "active": true,
 	}))
 	client := newMockClient(t, mt)
 
-	res, err := client.Accounts.GetWallet(context.Background(), "acc_1", "wt_1")
+	// A wallet can be fetched by id or by its 0x address (unique per account).
+	res, err := client.Accounts.GetWallet(context.Background(), "acc_1", "0xabc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mt.recorded[0].URL.Path != "/accounts/acc_1/wallets/wt_1" {
+	if mt.recorded[0].URL.Path != "/accounts/acc_1/wallets/0xabc" {
 		t.Errorf("path: got %s", mt.recorded[0].URL.Path)
 	}
-	if res.Wallet.ID != "w_1" {
-		t.Errorf("wallet id: got %s", res.Wallet.ID)
+	if res.ID != "w_1" || res.Address != "0xabc" {
+		t.Errorf("wallet: got %+v", res)
 	}
 }
 

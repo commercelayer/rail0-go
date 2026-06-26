@@ -62,10 +62,12 @@ func (s *AccountsService) Wallets(ctx context.Context, accountID string, params 
 	return &out, nil
 }
 
-// GetWallet fetches a single wallet-token row by its id (requires JWT).
-func (s *AccountsService) GetWallet(ctx context.Context, accountID, id string) (*WalletToken, error) {
-	var out WalletToken
-	if err := s.http.get(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, id), &out); err != nil {
+// GetWallet fetches a single wallet by its id or 0x address (requires JWT).
+// The address is unique per account, so `idOrAddress` may be either the wallet
+// UUID or its address. Returns the wallet record (not a wallet-token row).
+func (s *AccountsService) GetWallet(ctx context.Context, accountID, idOrAddress string) (*Wallet, error) {
+	var out Wallet
+	if err := s.http.get(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, idOrAddress), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -93,7 +95,8 @@ type UpdateWalletRequest struct {
 	Active *bool  `json:"active,omitempty"`
 }
 
-// UpdateWallet patches label or active on a wallet (requires JWT).
+// UpdateWallet patches label or active on a wallet (requires JWT). `id` may be
+// the wallet UUID or its 0x address (unique per account).
 func (s *AccountsService) UpdateWallet(ctx context.Context, accountID, id string, req UpdateWalletRequest) (*Wallet, error) {
 	var out Wallet
 	if err := s.http.patch(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, id), req, &out); err != nil {
@@ -102,7 +105,8 @@ func (s *AccountsService) UpdateWallet(ctx context.Context, accountID, id string
 	return &out, nil
 }
 
-// DeleteWallet removes a wallet (requires JWT). Returns 204 No Content.
+// DeleteWallet removes a wallet (requires JWT). `id` may be the wallet UUID or
+// its 0x address (unique per account). Returns 204 No Content.
 func (s *AccountsService) DeleteWallet(ctx context.Context, accountID, id string) error {
 	return s.http.delete(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, id), nil)
 }
@@ -118,6 +122,7 @@ type WalletBalancesParams struct {
 // active ERC-20 token balances, or an Error when that chain's RPC was
 // unreachable — the per-chain error is reported in-band rather than failing the
 // whole call, so one dead RPC never hides the other chains' balances.
+// `id` may be the wallet UUID or its 0x address (unique per account).
 func (s *AccountsService) Balances(ctx context.Context, accountID, id string, params ...WalletBalancesParams) (*WalletBalances, error) {
 	var out WalletBalances
 	path := fmt.Sprintf("/accounts/%s/wallets/%s/balances", accountID, id)

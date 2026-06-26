@@ -97,8 +97,8 @@ wallets, _ := client.Accounts.Wallets(ctx, accountID, rail0.ListWalletsParams{
     Sort:        "-created_at",
 })
 
-// Get a single wallet-token row
-wt, _ := client.Accounts.GetWallet(ctx, accountID, walletTokenID)
+// Get a single wallet by id or 0x address (address is unique per account)
+w, _ := client.Accounts.GetWallet(ctx, accountID, "0xABC…")
 
 // Create a wallet
 w, _ := client.Accounts.CreateWallet(ctx, accountID, rail0.CreateWalletRequest{
