@@ -97,8 +97,8 @@ wallets, _ := client.Accounts.Wallets(ctx, accountID, rail0.ListWalletsParams{
     Sort:        "-created_at",
 })
 
-// Get a single wallet-token row
-wt, _ := client.Accounts.GetWallet(ctx, accountID, walletTokenID)
+// Get a single wallet by id or 0x address (address is unique per account)
+w, _ := client.Accounts.GetWallet(ctx, accountID, "0xABC…")
 
 // Create a wallet
 w, _ := client.Accounts.CreateWallet(ctx, accountID, rail0.CreateWalletRequest{
@@ -111,6 +111,20 @@ client.Accounts.UpdateWallet(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Lab
 
 // Delete a wallet
 client.Accounts.DeleteWallet(ctx, accountID, w.ID)
+
+// Read a wallet's live on-chain balances (one entry per chain; each carries the
+// native balance and active token balances, or a per-chain Error if that RPC was
+// unreachable). Filters are optional.
+bal, _ := client.Accounts.Balances(ctx, accountID, walletTokenID, rail0.WalletBalancesParams{
+    ChainID:     84532,
+    TokenSymbol: "USDC",
+})
+for _, c := range bal.Balances {
+    if c.Error.Code != "" {
+        continue // RPC unreachable for this chain
+    }
+    fmt.Println(c.ChainID, c.Native.Amount, len(c.Tokens))
+}
 ```
 
 ## Payments

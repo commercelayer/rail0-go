@@ -123,19 +123,20 @@ func TestWallets_ListWithFilters(t *testing.T) {
 func TestWallets_GetSingle(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
-		"id": "wt_1", "wallet": map[string]any{"id": "w_1"}, "token": map[string]any{"symbol": "USDC"},
+		"id": "w_1", "account_id": "acc_1", "address": "0xabc", "active": true,
 	}))
 	client := newMockClient(t, mt)
 
-	res, err := client.Accounts.GetWallet(context.Background(), "acc_1", "wt_1")
+	// A wallet can be fetched by id or by its 0x address (unique per account).
+	res, err := client.Accounts.GetWallet(context.Background(), "acc_1", "0xabc")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mt.recorded[0].URL.Path != "/accounts/acc_1/wallets/wt_1" {
+	if mt.recorded[0].URL.Path != "/accounts/acc_1/wallets/0xabc" {
 		t.Errorf("path: got %s", mt.recorded[0].URL.Path)
 	}
-	if res.Wallet.ID != "w_1" {
-		t.Errorf("wallet id: got %s", res.Wallet.ID)
+	if res.ID != "w_1" || res.Address != "0xabc" {
+		t.Errorf("wallet: got %+v", res)
 	}
 }
 
@@ -192,6 +193,48 @@ func TestWallets_Delete(t *testing.T) {
 	req := mt.recorded[0]
 	if req.Method != http.MethodDelete || req.URL.Path != "/accounts/acc_1/wallets/w_1" {
 		t.Errorf("got %s %s", req.Method, req.URL.Path)
+	}
+}
+
+func TestWallets_Balances(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(200, map[string]any{
+		"wallet_id": "wt_1",
+		"address":   "0xabc",
+		"balances": []any{map[string]any{
+			"chain_id":     84532,
+			"network_type": "testnet",
+			"native":       map[string]any{"symbol": "ETH", "decimals": 18, "raw": "482000000000000000", "amount": "0.482"},
+			"tokens": []any{map[string]any{
+				"symbol": "USDC", "address": "0xtok", "decimals": 6, "raw": "120500000", "amount": "120.50",
+			}},
+		}},
+	}))
+	client := newMockClient(t, mt)
+
+	res, err := client.Accounts.Balances(context.Background(), "acc_1", "wt_1", rail0.WalletBalancesParams{
+		ChainID: 84532, TokenSymbol: "USDC",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := mt.recorded[0]
+	if req.URL.Path != "/accounts/acc_1/wallets/wt_1/balances" {
+		t.Errorf("path: got %s", req.URL.Path)
+	}
+	q := req.URL.Query()
+	if q.Get("chain_id") != "84532" || q.Get("token_symbol") != "USDC" {
+		t.Errorf("query: got %s", req.URL.RawQuery)
+	}
+	if res.WalletID != "wt_1" || len(res.Balances) != 1 {
+		t.Fatalf("unexpected balances: %+v", res)
+	}
+	chain := res.Balances[0]
+	if chain.ChainID != 84532 || chain.Native.Symbol != "ETH" {
+		t.Errorf("chain: got %+v", chain)
+	}
+	if len(chain.Tokens) != 1 || chain.Tokens[0].Symbol != "USDC" || chain.Tokens[0].Raw != "120500000" {
+		t.Errorf("tokens: got %+v", chain.Tokens)
 	}
 }
 
