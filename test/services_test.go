@@ -195,6 +195,48 @@ func TestWallets_Delete(t *testing.T) {
 	}
 }
 
+func TestWallets_Balances(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(200, map[string]any{
+		"wallet_id": "wt_1",
+		"address":   "0xabc",
+		"balances": []any{map[string]any{
+			"chain_id":     84532,
+			"network_type": "testnet",
+			"native":       map[string]any{"symbol": "ETH", "decimals": 18, "raw": "482000000000000000", "amount": "0.482"},
+			"tokens": []any{map[string]any{
+				"symbol": "USDC", "address": "0xtok", "decimals": 6, "raw": "120500000", "amount": "120.50",
+			}},
+		}},
+	}))
+	client := newMockClient(t, mt)
+
+	res, err := client.Accounts.Balances(context.Background(), "acc_1", "wt_1", rail0.WalletBalancesParams{
+		ChainID: 84532, TokenSymbol: "USDC",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := mt.recorded[0]
+	if req.URL.Path != "/accounts/acc_1/wallets/wt_1/balances" {
+		t.Errorf("path: got %s", req.URL.Path)
+	}
+	q := req.URL.Query()
+	if q.Get("chain_id") != "84532" || q.Get("token_symbol") != "USDC" {
+		t.Errorf("query: got %s", req.URL.RawQuery)
+	}
+	if res.WalletID != "wt_1" || len(res.Balances) != 1 {
+		t.Fatalf("unexpected balances: %+v", res)
+	}
+	chain := res.Balances[0]
+	if chain.ChainID != 84532 || chain.Native.Symbol != "ETH" {
+		t.Errorf("chain: got %+v", chain)
+	}
+	if len(chain.Tokens) != 1 || chain.Tokens[0].Symbol != "USDC" || chain.Tokens[0].Raw != "120500000" {
+		t.Errorf("tokens: got %+v", chain.Tokens)
+	}
+}
+
 // ================================================================
 //  Webhooks
 // ================================================================

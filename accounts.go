@@ -106,3 +106,36 @@ func (s *AccountsService) UpdateWallet(ctx context.Context, accountID, id string
 func (s *AccountsService) DeleteWallet(ctx context.Context, accountID, id string) error {
 	return s.http.delete(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, id), nil)
 }
+
+// WalletBalancesParams holds optional query parameters for AccountsService.Balances.
+type WalletBalancesParams struct {
+	ChainID     int    // restrict to one chain id; 0 = all configured chains
+	TokenSymbol string // restrict tokens to this symbol; "" = all active tokens
+}
+
+// Balances reads a wallet's live on-chain balances across the configured chains
+// (requires JWT). Each ChainBalance carries the native gas-token balance and the
+// active ERC-20 token balances, or an Error when that chain's RPC was
+// unreachable — the per-chain error is reported in-band rather than failing the
+// whole call, so one dead RPC never hides the other chains' balances.
+func (s *AccountsService) Balances(ctx context.Context, accountID, id string, params ...WalletBalancesParams) (*WalletBalances, error) {
+	var out WalletBalances
+	path := fmt.Sprintf("/accounts/%s/wallets/%s/balances", accountID, id)
+	if len(params) > 0 {
+		p := params[0]
+		q := url.Values{}
+		if p.ChainID > 0 {
+			q.Set("chain_id", strconv.Itoa(p.ChainID))
+		}
+		if p.TokenSymbol != "" {
+			q.Set("token_symbol", p.TokenSymbol)
+		}
+		if len(q) > 0 {
+			path = path + "?" + q.Encode()
+		}
+	}
+	if err := s.http.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
