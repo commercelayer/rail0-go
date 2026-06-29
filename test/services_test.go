@@ -91,16 +91,14 @@ func TestHealth_GetsHealth(t *testing.T) {
 
 func TestWallets_ListWithFilters(t *testing.T) {
 	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{
-		"data": []any{map[string]any{
-			"id": "w_1", "address": "0xabc", "active": true,
-			"tokens": []any{map[string]any{
-				"active": true, "default": false,
-				"token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xtok"},
-			}},
+	// The gateway returns a bare array + pagination headers (no envelope).
+	mt.push(listResp(200, []any{map[string]any{
+		"id": "w_1", "address": "0xabc", "active": true,
+		"tokens": []any{map[string]any{
+			"active": true, "default": false,
+			"token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xtok"},
 		}},
-		"meta": map[string]any{"page": 1, "per_page": 20, "total": 1},
-	}))
+	}}, "1"))
 	client := newMockClient(t, mt)
 
 	active := true
@@ -122,29 +120,30 @@ func TestWallets_ListWithFilters(t *testing.T) {
 	if len(res.Data) != 1 || len(res.Data[0].Tokens) != 1 || res.Data[0].Tokens[0].Token.Symbol != "USDC" {
 		t.Errorf("unexpected data: %+v", res.Data)
 	}
+	// Pagination meta comes from headers.
+	if res.Meta.Total != 1 {
+		t.Errorf("meta.total: got %d, want 1", res.Meta.Total)
+	}
 }
 
 func TestWallets_PaymentMethods(t *testing.T) {
 	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{
-		"data": []any{
-			map[string]any{
-				"id": "w_1", "address": "0xpayee1", "active": true,
-				"tokens": []any{
-					map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xusdc"}},
-					// inactive holding → must be dropped by PaymentMethods
-					map[string]any{"active": false, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc2"}},
-				},
-			},
-			map[string]any{
-				"id": "w_2", "address": "0xpayee2", "active": true,
-				"tokens": []any{
-					map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc3"}},
-				},
+	mt.push(listResp(200, []any{
+		map[string]any{
+			"id": "w_1", "address": "0xpayee1", "active": true,
+			"tokens": []any{
+				map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xusdc"}},
+				// inactive holding → must be dropped by PaymentMethods
+				map[string]any{"active": false, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc2"}},
 			},
 		},
-		"meta": map[string]any{"page": 1, "per_page": 100, "total": 2},
-	}))
+		map[string]any{
+			"id": "w_2", "address": "0xpayee2", "active": true,
+			"tokens": []any{
+				map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc3"}},
+			},
+		},
+	}, "2"))
 	client := newMockClient(t, mt)
 
 	methods, err := client.Wallets.PaymentMethods(context.Background(), "acc_1", rail0.PaymentMethodsParams{TokenSymbol: "USDC"})
@@ -322,10 +321,7 @@ func TestWebhooks_Create_ReturnsSecret(t *testing.T) {
 
 func TestWebhooks_ListWithFilters(t *testing.T) {
 	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{
-		"data": []any{webhookFixture()},
-		"meta": map[string]any{"page": 1, "per_page": 20, "total": 1},
-	}))
+	mt.push(listResp(200, []any{webhookFixture()}, "1"))
 	client := newMockClient(t, mt)
 
 	active := true
@@ -372,10 +368,7 @@ func TestWebhooks_StateTransitions(t *testing.T) {
 
 func TestWebhooks_EventCallbacks(t *testing.T) {
 	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{
-		"data": []any{map[string]any{"id": "ec_1", "webhook_id": "wh_1", "status": "delivered"}},
-		"meta": map[string]any{"page": 1, "per_page": 20, "total": 1},
-	}))
+	mt.push(listResp(200, []any{map[string]any{"id": "ec_1", "webhook_id": "wh_1", "status": "delivered"}}, "1"))
 	client := newMockClient(t, mt)
 
 	res, err := client.Webhooks.EventCallbacks(context.Background(), "wh_1", rail0.ListEventCallbacksParams{Status: "delivered"})
