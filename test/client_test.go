@@ -55,7 +55,7 @@ func (m *mockTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func (m *mockTransport) push(resp *http.Response) { m.queue = append(m.queue, mockCall{resp: resp}) }
-func (m *mockTransport) fail(err error)            { m.queue = append(m.queue, mockCall{err: err}) }
+func (m *mockTransport) fail(err error)           { m.queue = append(m.queue, mockCall{err: err}) }
 
 func jsonResp(status int, body any) *http.Response {
 	b, _ := json.Marshal(body)
@@ -64,6 +64,17 @@ func jsonResp(status int, body any) *http.Response {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(bytes.NewReader(b)),
 	}
+}
+
+// listResp builds a collection response as the gateway sends it: a bare JSON
+// array body plus pagination headers (no {data,meta} envelope). `total` is the
+// X-Total-Count value.
+func listResp(status int, body any, total string) *http.Response {
+	r := jsonResp(status, body)
+	r.Header.Set("X-Total-Count", total)
+	r.Header.Set("X-Page", "1")
+	r.Header.Set("X-Per-Page", "20")
+	return r
 }
 
 // newMockClient wires a fresh Client with the mock transport and zero retry delay.

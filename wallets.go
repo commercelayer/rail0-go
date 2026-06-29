@@ -34,7 +34,6 @@ type ListWalletsParams struct {
 // List returns the account's wallets, each with its token holdings nested under
 // Tokens (requires JWT).
 func (s *WalletsService) List(ctx context.Context, accountID string, params ...ListWalletsParams) (*PaginatedResponse[WalletWithTokens], error) {
-	var out PaginatedResponse[WalletWithTokens]
 	path := fmt.Sprintf("/accounts/%s/wallets", accountID)
 	if len(params) > 0 {
 		p := params[0]
@@ -61,10 +60,14 @@ func (s *WalletsService) List(ctx context.Context, accountID string, params ...L
 			path = path + "?" + q.Encode()
 		}
 	}
-	if err := s.http.get(ctx, path, &out); err != nil {
+	// List endpoints return a bare JSON array with pagination in headers, not a
+	// {data,meta} envelope — decode into the slice and read the meta back.
+	var data []WalletWithTokens
+	hdr, err := s.http.getList(ctx, path, &data)
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &PaginatedResponse[WalletWithTokens]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
 // PaymentMethodsParams filters the payment methods returned by

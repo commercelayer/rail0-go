@@ -41,7 +41,6 @@ type ListWebhooksParams struct {
 
 // List returns the account's webhooks (requires JWT).
 func (s *WebhooksService) List(ctx context.Context, params ...ListWebhooksParams) (*PaginatedResponse[Webhook], error) {
-	var out PaginatedResponse[Webhook]
 	path := "/webhooks"
 	if len(params) > 0 {
 		p := params[0]
@@ -68,10 +67,13 @@ func (s *WebhooksService) List(ctx context.Context, params ...ListWebhooksParams
 			path = path + "?" + q.Encode()
 		}
 	}
-	if err := s.http.get(ctx, path, &out); err != nil {
+	// Bare JSON array + pagination headers (not a {data,meta} envelope).
+	var data []Webhook
+	hdr, err := s.http.getList(ctx, path, &data)
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &PaginatedResponse[Webhook]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
 // CreateWebhookRequest is the body for WebhooksService.Create.
@@ -158,7 +160,6 @@ type ListEventCallbacksParams struct {
 
 // EventCallbacks lists delivery attempts for a webhook (requires JWT).
 func (s *WebhooksService) EventCallbacks(ctx context.Context, id string, params ...ListEventCallbacksParams) (*PaginatedResponse[EventCallback], error) {
-	var out PaginatedResponse[EventCallback]
 	path := fmt.Sprintf("/webhooks/%s/event_callbacks", id)
 	if len(params) > 0 {
 		p := params[0]
@@ -179,10 +180,13 @@ func (s *WebhooksService) EventCallbacks(ctx context.Context, id string, params 
 			path = path + "?" + q.Encode()
 		}
 	}
-	if err := s.http.get(ctx, path, &out); err != nil {
+	// Bare JSON array + pagination headers (not a {data,meta} envelope).
+	var data []EventCallback
+	hdr, err := s.http.getList(ctx, path, &data)
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &PaginatedResponse[EventCallback]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
 // Delete removes a webhook (requires JWT). Returns 204 No Content.
