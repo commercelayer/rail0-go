@@ -93,15 +93,18 @@ func TestWallets_ListWithFilters(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
 		"data": []any{map[string]any{
-			"id": "wt_1", "active": true,
-			"token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xtok"},
+			"id": "w_1", "address": "0xabc", "active": true,
+			"tokens": []any{map[string]any{
+				"active": true, "default": false,
+				"token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xtok"},
+			}},
 		}},
 		"meta": map[string]any{"page": 1, "per_page": 20, "total": 1},
 	}))
 	client := newMockClient(t, mt)
 
 	active := true
-	res, err := client.Accounts.Wallets(context.Background(), "acc_1", rail0.ListWalletsParams{
+	res, err := client.Wallets.List(context.Background(), "acc_1", rail0.ListWalletsParams{
 		ChainID: 8453, TokenSymbol: "USDC", Active: &active,
 	})
 	if err != nil {
@@ -115,8 +118,54 @@ func TestWallets_ListWithFilters(t *testing.T) {
 	if q.Get("chain_id") != "8453" || q.Get("token_symbol") != "USDC" || q.Get("active") != "true" {
 		t.Errorf("query: got %s", req.URL.RawQuery)
 	}
-	if len(res.Data) != 1 || res.Data[0].Token.Symbol != "USDC" {
+	// Wallet-centric shape: one wallet, its tokens nested under Tokens.
+	if len(res.Data) != 1 || len(res.Data[0].Tokens) != 1 || res.Data[0].Tokens[0].Token.Symbol != "USDC" {
 		t.Errorf("unexpected data: %+v", res.Data)
+	}
+}
+
+func TestWallets_PaymentMethods(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(200, map[string]any{
+		"data": []any{
+			map[string]any{
+				"id": "w_1", "address": "0xpayee1", "active": true,
+				"tokens": []any{
+					map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xusdc"}},
+					// inactive holding → must be dropped by PaymentMethods
+					map[string]any{"active": false, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc2"}},
+				},
+			},
+			map[string]any{
+				"id": "w_2", "address": "0xpayee2", "active": true,
+				"tokens": []any{
+					map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc3"}},
+				},
+			},
+		},
+		"meta": map[string]any{"page": 1, "per_page": 100, "total": 2},
+	}))
+	client := newMockClient(t, mt)
+
+	methods, err := client.Wallets.PaymentMethods(context.Background(), "acc_1", rail0.PaymentMethodsParams{TokenSymbol: "USDC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The method always requests active wallets and forwards the token filter.
+	q := mt.recorded[0].URL.Query()
+	if q.Get("active") != "true" || q.Get("token_symbol") != "USDC" {
+		t.Errorf("query: got %s", mt.recorded[0].URL.RawQuery)
+	}
+	// Flattened to one entry per (address, token, chain); the inactive holding
+	// on w_1 is dropped → 2 methods.
+	if len(methods) != 2 {
+		t.Fatalf("methods: got %+v", methods)
+	}
+	if methods[0].Address != "0xpayee1" || methods[0].ChainID != 8453 || methods[0].Token.Symbol != "USDC" {
+		t.Errorf("method[0]: %+v", methods[0])
+	}
+	if methods[1].Address != "0xpayee2" || methods[1].ChainID != 84532 {
+		t.Errorf("method[1]: %+v", methods[1])
 	}
 }
 
@@ -128,7 +177,7 @@ func TestWallets_GetSingle(t *testing.T) {
 	client := newMockClient(t, mt)
 
 	// A wallet can be fetched by id or by its 0x address (unique per account).
-	res, err := client.Accounts.GetWallet(context.Background(), "acc_1", "0xabc")
+	res, err := client.Wallets.Get(context.Background(), "acc_1", "0xabc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +196,7 @@ func TestWallets_Create(t *testing.T) {
 	}))
 	client := newMockClient(t, mt)
 
-	res, err := client.Accounts.CreateWallet(context.Background(), "acc_1", rail0.CreateWalletRequest{
+	res, err := client.Wallets.Create(context.Background(), "acc_1", rail0.CreateWalletRequest{
 		Address: "0xabc", Label: "Treasury",
 	})
 	if err != nil {
@@ -168,7 +217,7 @@ func TestWallets_Update_UsesPATCH(t *testing.T) {
 	client := newMockClient(t, mt)
 
 	active := false
-	if _, err := client.Accounts.UpdateWallet(context.Background(), "acc_1", "w_1", rail0.UpdateWalletRequest{
+	if _, err := client.Wallets.Update(context.Background(), "acc_1", "w_1", rail0.UpdateWalletRequest{
 		Label: "Main", Active: &active,
 	}); err != nil {
 		t.Fatal(err)
@@ -187,7 +236,7 @@ func TestWallets_Delete(t *testing.T) {
 	mt.push(jsonResp(204, nil))
 	client := newMockClient(t, mt)
 
-	if err := client.Accounts.DeleteWallet(context.Background(), "acc_1", "w_1"); err != nil {
+	if err := client.Wallets.Delete(context.Background(), "acc_1", "w_1"); err != nil {
 		t.Fatal(err)
 	}
 	req := mt.recorded[0]
@@ -212,7 +261,7 @@ func TestWallets_Balances(t *testing.T) {
 	}))
 	client := newMockClient(t, mt)
 
-	res, err := client.Accounts.Balances(context.Background(), "acc_1", "wt_1", rail0.WalletBalancesParams{
+	res, err := client.Wallets.Balances(context.Background(), "acc_1", "wt_1", rail0.WalletBalancesParams{
 		ChainID: 84532, TokenSymbol: "USDC",
 	})
 	if err != nil {

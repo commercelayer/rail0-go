@@ -23,18 +23,19 @@ client := rail0.NewClient(rail0.ClientOptions{
 })
 ctx := context.Background()
 
-// Discover the account's wallet-token rows and pick a payment method
-wallets, _ := client.Accounts.Wallets(ctx, "account-uuid")
-wt := wallets.Data[0]
+// Discover the merchant's wallets (each with its tokens nested) and pick one
+wallets, _ := client.Wallets.List(ctx, "account-uuid")
+w := wallets.Data[0]   // a wallet
+tk := w.Tokens[0].Token // one of its accepted tokens (token/chain)
 
 // Create a payment (flat params)
 resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
-    ChainID: wt.ChainID,
+    ChainID: tk.ChainID,
     Mode:    "authorize",
     Amount:  "50.00", // human decimal amount
-    Token:   wt.TokenAddress,
+    Token:   string(tk.Address),
     Payer:   "0xBuyer...",
-    Payee:   wt.Address,
+    Payee:   w.Address,
 })
 ```
 
@@ -46,7 +47,7 @@ resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 | `client.Health` | Gateway health check |
 | `client.Chains` | Public blockchain catalog |
 | `client.Tokens` | Public token catalog |
-| `client.Accounts` | Wallet management under `/accounts/:id/wallets` (JWT) |
+| `client.Wallets` | Wallet management under `/accounts/:id/wallets` (JWT) |
 | `client.Payments` | Full payment lifecycle |
 | `client.Webhooks` | Webhook subscription management (JWT) |
 
@@ -84,38 +85,54 @@ fmt.Println(h.Status, h.ActiveChains)
 
 ## Wallets (under accounts, JWT)
 
-The list and single-get endpoints return wallet-token join rows
-(`rail0.WalletToken`); create and update return the plain `rail0.Wallet`.
+The list endpoint returns the account's wallets, each with its token holdings
+nested under `Tokens` (`rail0.WalletWithTokens`) — a wallet with no tokens is
+still returned (`Tokens` empty), never omitted. Single-get/create/update return
+the plain `rail0.Wallet`.
 
 ```go
-// List wallet-token rows with filters
+// List wallets, each with its tokens nested. ChainID/TokenSymbol restrict the
+// nested tokens (the wallet is still returned, possibly with no tokens); Active
+// filters the wallets.
 active := true
-wallets, _ := client.Accounts.Wallets(ctx, accountID, rail0.ListWalletsParams{
+wallets, _ := client.Wallets.List(ctx, accountID, rail0.ListWalletsParams{
     ChainID:     8453,
     TokenSymbol: "USDC",
     Active:      &active,
     Sort:        "-created_at",
 })
+// wallets.Data[i].Tokens[j].Token.Symbol
+
+// Payment methods: the merchant's active addresses with their active tokens,
+// flattened to one entry per (address, token, chain). Handy for a payer
+// choosing where/how to pay. Optionally filter by chain and/or token symbol.
+methods, _ := client.Wallets.PaymentMethods(ctx, accountID, rail0.PaymentMethodsParams{
+    ChainID:     8453,   // optional
+    TokenSymbol: "USDC", // optional
+})
+for _, m := range methods {
+    fmt.Println(m.Address, m.ChainID, m.Token.Symbol) // pay m.Token to m.Address on m.ChainID
+}
 
 // Get a single wallet by id or 0x address (address is unique per account)
-w, _ := client.Accounts.GetWallet(ctx, accountID, "0xABC…")
+w, _ := client.Wallets.Get(ctx, accountID, "0xABC…")
 
 // Create a wallet
-w, _ := client.Accounts.CreateWallet(ctx, accountID, rail0.CreateWalletRequest{
+w, _ := client.Wallets.Create(ctx, accountID, rail0.CreateWalletRequest{
     Address: "0xABC...",
     Label:   "Treasury",
 })
 
 // Update a wallet (label / active)
-client.Accounts.UpdateWallet(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Main"})
+client.Wallets.Update(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Main"})
 
 // Delete a wallet
-client.Accounts.DeleteWallet(ctx, accountID, w.ID)
+client.Wallets.Delete(ctx, accountID, w.ID)
 
 // Read a wallet's live on-chain balances (one entry per chain; each carries the
 // native balance and active token balances, or a per-chain Error if that RPC was
 // unreachable). Filters are optional.
-bal, _ := client.Accounts.Balances(ctx, accountID, walletTokenID, rail0.WalletBalancesParams{
+bal, _ := client.Wallets.Balances(ctx, accountID, walletID, rail0.WalletBalancesParams{
     ChainID:     84532,
     TokenSymbol: "USDC",
 })
