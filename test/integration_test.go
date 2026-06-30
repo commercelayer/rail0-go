@@ -39,30 +39,33 @@ func newTestServer(t *testing.T) *rail0.Client {
 		"rail0_id":    "0x1111111111111111111111111111111111111111111111111111111111111111",
 		"config_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		"payment": map[string]any{
-			"payer": "0xBuyerAddress0000000000000000000000000000",
-			"payee": "0xMerchantAddress00000000000000000000000000",
-			"token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+			"payer":  "0xBuyerAddress0000000000000000000000000000",
+			"payee":  "0xMerchantAddress00000000000000000000000000",
+			"token":  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
 			"amount": "100000000", "authorization_expiry": 9999999999, "refund_expiry": 9999999999,
 			"fee_bps": 0, "fee_receiver": "0x0000000000000000000000000000000000000000",
 		},
-		"chain_id":      8453,
+		"chain_id":       8453,
 		"rail0_contract": "0x4444444444444444444444444444444444444444",
 		"signing_prepare": map[string]any{
-			"domain": map[string]any{"name": "USD Coin", "version": "2", "chainId": 8453, "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"},
-			"types": map[string]any{"TransferWithAuthorization": []any{}},
+			"domain":      map[string]any{"name": "USD Coin", "version": "2", "chainId": 8453, "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"},
+			"types":       map[string]any{"TransferWithAuthorization": []any{}},
 			"primaryType": "TransferWithAuthorization",
 			"message": map[string]any{
-				"from": "0xBuyerAddress0000000000000000000000000000",
-				"to": "0x4444444444444444444444444444444444444444",
+				"from":  "0xBuyerAddress0000000000000000000000000000",
+				"to":    "0x4444444444444444444444444444444444444444",
 				"value": "50000000", "validAfter": "0", "validBefore": "9999999999",
 				"nonce": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 			},
 		},
 	}
 
+	// PUT /payments/{id}/sign returns the updated payment, now in `signed`.
 	sigFixture := map[string]any{
-		"paymentId": "0x1111111111111111111111111111111111111111111111111111111111111111",
-		"status":    "signature_stored",
+		"rail0_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+		"status":   "signed",
+		"mode":     "authorize",
+		"payer":    "0x1111111111111111111111111111111111111111",
 	}
 
 	submitFixture := map[string]any{
@@ -178,8 +181,11 @@ func TestIntegration_Sign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status == "" {
-		t.Error("status should not be empty")
+	if res.Status != "signed" {
+		t.Errorf("status: got %s, want signed", res.Status)
+	}
+	if res.Rail0Id == "" {
+		t.Error("rail0_id should be populated from the returned payment")
 	}
 }
 
