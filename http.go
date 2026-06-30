@@ -228,11 +228,15 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			var errBody APIErrorBody
 			_ = json.Unmarshal(raw, &errBody)
-			if errBody.Code == "" {
-				errBody.Code = "UnknownError"
-				errBody.Message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			// Prefer the gateway's identifier (`status`, else `code`) and its text
+			// (`message`, else Grape's `error`); fall back to the bare HTTP status
+			// only when the body carries neither — never clobber a real message.
+			code := firstNonEmpty(errBody.Status, errBody.Code)
+			message := firstNonEmpty(errBody.Message, errBody.Error)
+			if code == "" && message == "" {
+				message = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			}
-			apiErr := &APIError{Status: resp.StatusCode, Code: errBody.Code, Message: errBody.Message}
+			apiErr := &APIError{Status: resp.StatusCode, Code: code, Message: message}
 			if c.logger != nil {
 				c.logger(LogEntry{
 					Method:       method,

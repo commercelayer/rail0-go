@@ -42,8 +42,13 @@ type SubmitTransactionRequest struct {
 }
 
 // APIErrorBody is the JSON shape of error responses from the RAIL0 API.
-// Used internally by the HTTP client to parse non-2xx responses.
+// Used internally by the HTTP client to parse non-2xx responses. The gateway
+// puts the machine-readable identifier in `status` (occasionally `code`) and the
+// human text in `message`; Grape validation errors put the text in `error`. All
+// four are parsed so a useful code/message can always be surfaced.
 type APIErrorBody struct {
+	Status  string `json:"status"`
 	Code    string `json:"code"`
+	Error   string `json:"error"`
 	Message string `json:"message"`
 }

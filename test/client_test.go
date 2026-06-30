@@ -631,6 +631,53 @@ func TestCreatePayment_404_ReturnsAPIError(t *testing.T) {
 	}
 }
 
+func TestAPIError_SurfacesGatewayStatusAndMessage(t *testing.T) {
+	mt := &mockTransport{t: t}
+	// The gateway puts the identifier in `status` and the text in `message`.
+	mt.push(jsonResp(422, map[string]any{"status": "address_not_registered", "message": "Address not associated with any account"}))
+	client := newMockClient(t, mt)
+
+	_, err := client.Payments.CreatePayment(context.Background(), mockCreateReq)
+
+	var apiErr *rail0.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Code != "address_not_registered" {
+		t.Errorf("Code: got %q, want address_not_registered", apiErr.Code)
+	}
+	if apiErr.Message != "Address not associated with any account" {
+		t.Errorf("Message: got %q, want the gateway message", apiErr.Message)
+	}
+}
+
+func TestAPIError_FallsBackToGrapeErrorField(t *testing.T) {
+	mt := &mockTransport{t: t}
+	// Grape validation errors carry the human text in `error`.
+	mt.push(jsonResp(400, map[string]any{"error": "payer is invalid"}))
+	client := newMockClient(t, mt)
+
+	_, err := client.Payments.CreatePayment(context.Background(), mockCreateReq)
+
+	var apiErr *rail0.APIError
+	if !errors.As(err, &apiErr) || apiErr.Message != "payer is invalid" {
+		t.Fatalf("expected message from the `error` field, got %v", err)
+	}
+}
+
+func TestAPIError_EmptyBodyFallsBackToHTTPStatus(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(500, map[string]any{}))
+	client := newMockClient(t, mt)
+
+	_, err := client.Payments.CreatePayment(context.Background(), mockCreateReq)
+
+	var apiErr *rail0.APIError
+	if !errors.As(err, &apiErr) || apiErr.Message != "HTTP 500" {
+		t.Fatalf("expected the HTTP 500 fallback, got %v", err)
+	}
+}
+
 // ================================================================
 //  Retry logic
 // ================================================================

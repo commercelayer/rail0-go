@@ -13,5 +13,18 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	if e.Code == "" {
+		return fmt.Sprintf("rail0 error (HTTP %d): %s", e.Status, e.Message)
+	}
 	return fmt.Sprintf("rail0 %s (HTTP %d): %s", e.Code, e.Status, e.Message)
+}
+
+// firstNonEmpty returns the first argument that isn't the empty string, or "".
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
