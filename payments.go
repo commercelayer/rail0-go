@@ -136,9 +136,9 @@ type ListTransactionsParams struct {
 	PerPage   int    // items per page; 0 = use server default
 }
 
-// Transactions lists on-chain transactions for a payment.
+// Transactions lists on-chain transactions for a payment. Like Payments.List,
+// the gateway returns a bare JSON array with pagination in response headers.
 func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, params ...ListTransactionsParams) (*PaginatedResponse[Transaction], error) {
-	var out PaginatedResponse[Transaction]
 	path := fmt.Sprintf("/payments/%s/transactions", paymentID)
 	if len(params) > 0 {
 		p := params[0]
@@ -162,10 +162,12 @@ func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, p
 			path = path + "?" + q.Encode()
 		}
 	}
-	if err := s.http.get(ctx, path, &out); err != nil {
+	var data []Transaction
+	hdr, err := s.http.getList(ctx, path, &data)
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &PaginatedResponse[Transaction]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
 // Sign deposits the payer's EIP-712 signature (PUT /payments/{id}/sign).

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"strings"
 
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
@@ -137,29 +136,4 @@ func personalSign(privateKey []byte, message string) (string, error) {
 	copy(sig[32:64], compact[33:]) // s
 	sig[64] = compact[0]           // v
 	return "0x" + hex.EncodeToString(sig), nil
-}
-
-// addressFromPrivateKey is an alias used by the CLI for display.
-func addressFromPrivateKey(privateKey []byte) (string, error) {
-	return privateKeyToEthAddress(privateKey)
-}
-
-// siweMessage builds a raw EIP-4361 message string (used by tests).
-func siweMessage(domain, address, nonce string) (string, error) {
-	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonce, map[string]interface{}{
-		"chainId":   1,
-		"statement": "Sign in to RAIL0",
-	})
-	if err != nil {
-		return "", err
-	}
-	return msg.String(), nil
-}
-
-// stripScheme removes the scheme from a URL, returning just the host (and optional path).
-func stripScheme(u string) string {
-	if i := strings.Index(u, "://"); i >= 0 {
-		return u[i+3:]
-	}
-	return u
 }

@@ -14,7 +14,7 @@ func main() {
 	ctx := context.Background()
 	client := rail0.NewClient(rail0.ClientOptions{BaseURL: "https://api.rail0.xyz"})
 
-	createResp, err := client.Payments.CreatePayment(ctx, rail0.CreatePaymentRequest{
+	createResp, err := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 		ChainID: 8453,
 		Mode:    "charge",
 		Amount:  "25.00",
@@ -27,10 +27,14 @@ func main() {
 	}
 	fmt.Printf("Payment ID: %s\n", createResp.Rail0Id)
 
-	// Payer signs and submits signature
-	client.Payments.Sign(ctx, createResp.Rail0Id, rail0.PayerSignatureRequest{
+	// Payer signs and submits signature. Sign returns the updated payment.
+	signedPayment, err := client.Payments.Sign(ctx, createResp.Rail0Id, rail0.PayerSignatureRequest{
 		Signature: "0x...",
 	})
+	if err != nil {
+		log.Fatalf("Sign: %v", err)
+	}
+	fmt.Printf("Payment status: %s\n", signedPayment.Status)
 
 	// Payee gets the unsigned charge tx
 	chargePayload, err := client.Payments.ChargePrepare(ctx, createResp.Rail0Id)

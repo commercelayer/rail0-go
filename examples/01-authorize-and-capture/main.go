@@ -33,7 +33,7 @@ func main() {
 	// Step 1 — Payer creates a payment intent
 	// ----------------------------------------------------------------
 
-	createResp, err := client.Payments.CreatePayment(ctx, rail0.CreatePaymentRequest{
+	createResp, err := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 		ChainID: 8453,
 		Mode:    "authorize",
 		Amount:  "50.00",
@@ -48,14 +48,15 @@ func main() {
 	fmt.Printf("Payment ID:  %s\n", createResp.Rail0Id)
 	fmt.Printf("Config hash: %s\n", createResp.ConfigHash)
 
-	// Step 2 — Payer signs and submits the EIP-712 signature
-	sigResp, err := client.Payments.Sign(ctx, createResp.Rail0Id, rail0.PayerSignatureRequest{
+	// Step 2 — Payer signs and submits the EIP-712 signature.
+	// Sign returns the updated payment (now "signed", with SignedAt set).
+	signedPayment, err := client.Payments.Sign(ctx, createResp.Rail0Id, rail0.PayerSignatureRequest{
 		Signature: "0x1a2b3c...(130 hex chars from eth_signTypedData_v4)",
 	})
 	if err != nil {
 		log.Fatalf("Sign: %v", err)
 	}
-	fmt.Printf("Signature status: %s\n", sigResp.Status)
+	fmt.Printf("Payment status: %s (signed at %s)\n", signedPayment.Status, signedPayment.SignedAt)
 
 	// ----------------------------------------------------------------
 	// Step 3 — Payee builds the unsigned authorize transaction

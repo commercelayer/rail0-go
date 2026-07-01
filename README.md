@@ -189,6 +189,28 @@ client.Payments.Submit(ctx, rail0ID, rail0.OpVoid, rail0.SubmitTransactionReques
 txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{Sort: "-submitted_at"})
 ```
 
+### Disputes
+
+Disputes are payer-driven and signal-only (they never move funds). They follow
+the same prepare → submit lifecycle as the other operations: prepare returns a
+pending `Transaction` with the unsigned tx, the payer signs it, and Submit
+broadcasts the signed raw tx. The on-chain event then flips the payment's
+`Disputed` flag.
+
+```go
+// Open a dispute (payer only). reason is an optional bytes32 code (0x…).
+tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, "0x01")
+// sign tx.UnsignedTransaction → signedBytes
+client.Payments.Dispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
+
+// Close a dispute (payer only)
+tx, _ = client.Payments.CloseDisputePrepare(ctx, rail0ID)
+client.Payments.CloseDispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
+
+// Open/close history for a payment
+disputes, _ := client.Payments.Disputes(ctx, rail0ID)
+```
+
 ## Webhooks (JWT)
 
 ```go
@@ -260,9 +282,17 @@ go test ./...
 go build ./...
 ```
 
-> Note: the files under `gen/` plus `types_gen.go` were originally generated
-> from an OpenAPI document in the (now out-of-scope) `rail0-api` repo. Until the
-> gateway publishes an OpenAPI document again, `types_gen.go` is hand-maintained.
+> Note: `types_gen.go` is generated from the gateway's OpenAPI document
+> (`rail0-gateway/docs/openapi.json`) by `gen/generate.go`. Do not hand-edit it —
+> after a gateway API change, regenerate it:
+>
+> ```bash
+> go run gen/generate.go
+> ```
+>
+> The client method files (`auth.go`, `payments.go`, `accounts.go`,
+> `webhooks.go`, `health.go`, `chains.go`, `tokens.go`) are hand-maintained and
+> are never overwritten by the generator.
 
 ## License
 
