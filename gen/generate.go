@@ -144,8 +144,7 @@ var schemaTypeOverride = map[string]map[string]string{
 		"response_code": "*int",
 	},
 	"WalletToken": {
-		"address":       "Address",
-		"token_address": "Address",
+		"address": "Address",
 	},
 	"Token": {
 		"address": "Address",
