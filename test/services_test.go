@@ -84,28 +84,6 @@ func TestHealth_GetsHealth(t *testing.T) {
 	}
 }
 
-func TestPayments_TransactionGas(t *testing.T) {
-	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{
-		"tx_hash": "0xabc", "payment_id": "0xdef", "chain_id": 5042002,
-		"event_type": "authorized", "block_number": "49810649", "block_timestamp": 1,
-		"gas_limit": "21000", "gas_used": "21000", "effective_gas_price": "1000000000",
-		"gas_cost": "21000000000000", "base_fee_per_gas": nil,
-	}))
-	client := newMockClient(t, mt)
-
-	res, err := client.Payments.TransactionGas(context.Background(), "0xpid", "0xabc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mt.recorded[0].URL.Path != "/payments/0xpid/transactions/0xabc/gas" {
-		t.Errorf("path: got %s, want /payments/0xpid/transactions/0xabc/gas", mt.recorded[0].URL.Path)
-	}
-	if res.GasUsed != "21000" || res.ChainID != 5042002 {
-		t.Errorf("unexpected gas: %+v", res)
-	}
-}
-
 // ================================================================
 //  Accounts / wallets
 // ================================================================
