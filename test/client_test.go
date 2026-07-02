@@ -906,14 +906,14 @@ func TestDisputes_ListsHistory(t *testing.T) {
 	if req.URL.Path != wantPath {
 		t.Errorf("path: got %s, want %s", req.URL.Path, wantPath)
 	}
-	if len(disputes) != 1 {
-		t.Fatalf("expected 1 dispute, got %d", len(disputes))
+	if len(disputes.Data) != 1 {
+		t.Fatalf("expected 1 dispute, got %d", len(disputes.Data))
 	}
-	if disputes[0].Status != "open" {
-		t.Errorf("Status: got %q, want open", disputes[0].Status)
+	if disputes.Data[0].Status != "open" {
+		t.Errorf("Status: got %q, want open", disputes.Data[0].Status)
 	}
-	if disputes[0].ID != "dsp_1" {
-		t.Errorf("ID: got %q, want dsp_1", disputes[0].ID)
+	if disputes.Data[0].ID != "dsp_1" {
+		t.Errorf("ID: got %q, want dsp_1", disputes.Data[0].ID)
 	}
 }
 
