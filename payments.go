@@ -25,15 +25,21 @@ const (
 
 // ListPaymentsParams holds optional query parameters for Payments.List.
 type ListPaymentsParams struct {
-	Status  string // filter by payment status
-	Mode    string // filter by mode ("authorize" or "charge")
-	Payer   string // filter by payer address
-	Payee   string // filter by payee address
-	Token   string // filter by token address
-	Rail0ID string // filter by the logical on-chain payment id (0x…)
-	Sort    string // sort fields: comma-separated, prefix with - for desc
-	Page    int    // page number (1-based); 0 = use server default
-	PerPage int    // items per page; 0 = use server default
+	Status      string // filter by payment status
+	Mode        string // filter by mode ("authorize" or "charge")
+	Payer       string // filter by payer address
+	Payee       string // filter by payee address
+	Token       string // filter by token address
+	Rail0ID     string // filter by the logical on-chain payment id (0x…)
+	ChainID     int    // filter by the payment's chain (resolved via its contract); 0 = no filter
+	Disputed    *bool  // filter by whether an open dispute exists; nil = no filter
+	MinAmount   string // minimum amount in token base units (inclusive)
+	MaxAmount   string // maximum amount in token base units (inclusive)
+	CreatedFrom string // only payments created at/after this ISO-8601 time
+	CreatedTo   string // only payments created at/before this ISO-8601 time
+	Sort        string // sort fields: comma-separated, prefix with - for desc
+	Page        int    // page number (1-based); 0 = use server default
+	PerPage     int    // items per page; 0 = use server default
 }
 
 // List returns payments for the authenticated account (requires JWT). The
@@ -62,6 +68,24 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 		}
 		if p.Rail0ID != "" {
 			q.Set("rail0_id", p.Rail0ID)
+		}
+		if p.ChainID > 0 {
+			q.Set("chain_id", strconv.Itoa(p.ChainID))
+		}
+		if p.Disputed != nil {
+			q.Set("disputed", strconv.FormatBool(*p.Disputed))
+		}
+		if p.MinAmount != "" {
+			q.Set("min_amount", p.MinAmount)
+		}
+		if p.MaxAmount != "" {
+			q.Set("max_amount", p.MaxAmount)
+		}
+		if p.CreatedFrom != "" {
+			q.Set("created_from", p.CreatedFrom)
+		}
+		if p.CreatedTo != "" {
+			q.Set("created_to", p.CreatedTo)
 		}
 		if p.Sort != "" {
 			q.Set("sort", p.Sort)
@@ -329,11 +353,41 @@ func (s *PaymentsService) CloseDispute(ctx context.Context, paymentID Bytes32, p
 	return &out, nil
 }
 
-// Disputes lists a payment's dispute open/close history.
-func (s *PaymentsService) Disputes(ctx context.Context, paymentID Bytes32) ([]Dispute, error) {
-	var out []Dispute
-	if err := s.http.get(ctx, "/payments/"+paymentID+"/disputes", &out); err != nil {
+// ListDisputesParams holds optional query parameters for Payments.Disputes.
+type ListDisputesParams struct {
+	Status  string // filter by dispute status ("open" or "closed")
+	Sort    string // sort fields: comma-separated, prefix with - for desc
+	Page    int    // page number (1-based); 0 = use server default
+	PerPage int    // items per page; 0 = use server default
+}
+
+// Disputes lists a payment's dispute open/close history. The gateway paginates
+// this endpoint (bare-array body with pagination in response headers).
+func (s *PaymentsService) Disputes(ctx context.Context, paymentID Bytes32, params ...ListDisputesParams) (*PaginatedResponse[Dispute], error) {
+	path := "/payments/" + paymentID + "/disputes"
+	if len(params) > 0 {
+		p := params[0]
+		q := url.Values{}
+		if p.Status != "" {
+			q.Set("status", p.Status)
+		}
+		if p.Sort != "" {
+			q.Set("sort", p.Sort)
+		}
+		if p.Page > 0 {
+			q.Set("page", strconv.Itoa(p.Page))
+		}
+		if p.PerPage > 0 {
+			q.Set("per_page", strconv.Itoa(p.PerPage))
+		}
+		if len(q) > 0 {
+			path = path + "?" + q.Encode()
+		}
+	}
+	var data []Dispute
+	hdr, err := s.http.getList(ctx, path, &data)
+	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return &PaginatedResponse[Dispute]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
