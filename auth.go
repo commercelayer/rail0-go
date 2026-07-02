@@ -16,14 +16,10 @@ type AuthService struct {
 }
 
 // NonceResponse is returned by GetNonce (POST /auth/nonces). The single-use nonce
-// value to embed in the SIWE message is carried in Value.
+// to embed in the SIWE message is carried in Nonce.
 type NonceResponse struct {
-	ID        string `json:"id"`
-	Value     string `json:"value"`
+	Nonce     string `json:"nonce"`
 	ExpiresAt string `json:"expires_at"`
-	Used      bool   `json:"used"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // AuthRequest is the body for Verify (POST /auth).
@@ -77,7 +73,7 @@ func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain strin
 		return nil, fmt.Errorf("rail0: derive address: %w", err)
 	}
 
-	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonceResp.Value, map[string]interface{}{
+	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonceResp.Nonce, map[string]interface{}{
 		"chainId":   1,
 		"statement": "Sign in to RAIL0",
 	})

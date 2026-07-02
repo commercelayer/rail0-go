@@ -17,8 +17,7 @@ import (
 func TestGetNonce_PostsToAuthNonces(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(201, map[string]any{
-		"id": "non_1", "value": "abc123", "expires_at": "2026-01-01T00:00:00Z",
-		"used": false, "created_at": "2026-01-01T00:00:00Z",
+		"nonce": "abc123", "expires_at": "2026-01-01T00:00:00Z",
 	}))
 	client := newMockClient(t, mt)
 
@@ -33,8 +32,8 @@ func TestGetNonce_PostsToAuthNonces(t *testing.T) {
 	if req.URL.Path != "/auth/nonces" {
 		t.Errorf("path: got %s, want /auth/nonces", req.URL.Path)
 	}
-	if res.Value != "abc123" {
-		t.Errorf("value: got %s, want abc123", res.Value)
+	if res.Nonce != "abc123" {
+		t.Errorf("nonce: got %s, want abc123", res.Nonce)
 	}
 }
 
