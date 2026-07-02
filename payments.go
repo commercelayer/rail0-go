@@ -194,6 +194,34 @@ func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, p
 	return &PaginatedResponse[Transaction]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
+// TransactionGas is on-chain gas/receipt data for a confirmed transaction,
+// proxied from the indexer via the gateway.
+type TransactionGas struct {
+	TxHash            string `json:"tx_hash"`
+	PaymentID         string `json:"payment_id"`
+	ChainID           int    `json:"chain_id"`
+	EventType         string `json:"event_type"`
+	BlockNumber       string `json:"block_number"`
+	BlockTimestamp    int64  `json:"block_timestamp"`
+	GasLimit          string `json:"gas_limit"`
+	GasUsed           string `json:"gas_used"`
+	EffectiveGasPrice string `json:"effective_gas_price"`
+	GasCost           string `json:"gas_cost"`
+	BaseFeePerGas     string `json:"base_fee_per_gas,omitempty"`
+}
+
+// TransactionGas fetches on-chain gas data for one of the payment's transactions,
+// proxied from the indexer. txHash is the 0x-prefixed 32-byte transaction hash.
+// Returns a 404 error when the tx isn't the payment's or the indexer has no
+// record of it yet, and a 502 error when the indexer is unreachable.
+func (s *PaymentsService) TransactionGas(ctx context.Context, paymentID Bytes32, txHash string) (*TransactionGas, error) {
+	var out TransactionGas
+	if err := s.http.get(ctx, fmt.Sprintf("/payments/%s/transactions/%s/gas", paymentID, txHash), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Sign deposits the payer's EIP-712 signature (PUT /payments/{id}/sign).
 func (s *PaymentsService) Sign(ctx context.Context, paymentID Bytes32, params PayerSignatureRequest) (*Payment, error) {
 	var out Payment
