@@ -264,7 +264,10 @@ func (s *PaymentsService) Capture(ctx context.Context, paymentID Bytes32, params
 	return s.Submit(ctx, paymentID, OpCapture, params)
 }
 
-// VoidPrepare builds the unsigned void() transaction.
+// VoidPrepare builds the unsigned void() transaction. Only valid while the
+// authorization is fully intact (nothing captured yet); after any — even partial
+// — capture the gateway rejects it (the contract reverts AlreadyCaptured). Use
+// Release to return the uncaptured remainder instead.
 func (s *PaymentsService) VoidPrepare(ctx context.Context, paymentID Bytes32) (*Transaction, error) {
 	return s.Prepare(ctx, paymentID, OpVoid)
 }
@@ -275,7 +278,10 @@ func (s *PaymentsService) Void(ctx context.Context, paymentID Bytes32, params Su
 }
 
 // ReleasePrepare builds the unsigned release() transaction. from is optional and
-// overrides the submitter address (defaults to the payer when empty).
+// overrides the submitter address (defaults to the payer when empty). Returns the
+// uncaptured escrow to the payer; the payment closes as "released" only on a total
+// release (an untouched authorization — nothing captured, nothing refundable),
+// otherwise its status is left unchanged so any refundable residual stays actionable.
 func (s *PaymentsService) ReleasePrepare(ctx context.Context, paymentID Bytes32, from string) (*Transaction, error) {
 	return s.Prepare(ctx, paymentID, OpRelease, PrepareRequest{From: from})
 }
@@ -291,6 +297,9 @@ func (s *PaymentsService) Release(ctx context.Context, paymentID Bytes32, params
 // SigningPayload holds the EIP-3009 typed data for the payee to sign.
 // Phase 2: pass req with Amount + Signature set → the returned Transaction has
 // UnsignedTransaction populated, ready to sign and Submit.
+//
+// The payment closes as "refunded" only once fully settled (escrow and refundable
+// both drained); a partial refund leaves its status unchanged.
 func (s *PaymentsService) RefundPrepare(ctx context.Context, paymentID Bytes32, req PrepareRequest) (*Transaction, error) {
 	return s.Prepare(ctx, paymentID, OpRefund, req)
 }
