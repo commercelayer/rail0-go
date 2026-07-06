@@ -17,9 +17,10 @@ rail0 is a multi-repo project. All repositories prefixed with `rail0-` are part 
 | `rail0-cli` | CLI tool |
 | `rail0-ruby` | Ruby SDK |
 | `rail0-go` | Go SDK |
+| `rail0-ts` | TypeScript SDK |
 | `rail0-test` | Integration and cross-SDK tests |
 
-> Note: `rail0-api`, `rail0-ts`, `rail0-py`, and `rail0-rust` are temporarily out of scope.
+> Note: `rail0-api`, `rail0-py`, and `rail0-rust` are temporarily out of scope.
 
 When a change in one repo affects the contract, the indexer, or any SDK, flag it explicitly and propose coordinated changes across the relevant repos.
 
