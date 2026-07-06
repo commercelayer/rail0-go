@@ -66,7 +66,7 @@ func TestVerify_PostsToAuth(t *testing.T) {
 func TestHealth_GetsHealth(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
-		"status": "ok", "api_version": "1.0", "contract_version": "1.0",
+		"status": "ok", "api_version": "v1", "contract_version": "1.2.1",
 		"db": "ok", "active_chains": 2, "active_contracts": 1,
 		"timestamp": "2026-01-01T00:00:00Z",
 	}))

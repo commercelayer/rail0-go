@@ -153,8 +153,8 @@ Operation outcomes are happy-path: `void` is allowed only before any capture
 (else the contract reverts `AlreadyCaptured`); `release` closes the payment as
 `released` only on a total release (an untouched authorization), otherwise it
 leaves the status unchanged; `refund` closes it as `refunded` only once fully
-settled, so a partial refund leaves the status unchanged (`partially_refunded` is
-no longer produced).
+settled, so a partial refund leaves the status unchanged (the `partially_refunded`
+value is retained only for historical rows).
 
 ```go
 // List (requires JWT)
@@ -249,7 +249,8 @@ client.Webhooks.Delete(ctx, wh.ID)
 
 Topics: `payments.created`, `payments.signed`, `payments.authorized`,
 `payments.charged`, `payments.captured`, `payments.voided`,
-`payments.released`, `payments.refunded`, `payments.failed`
+`payments.released`, `payments.refunded`, `payments.failed`,
+`payments.disputed`, `payments.dispute_closed`
 (also available as `rail0.TopicPayments*` constants).
 
 ## Sorting
