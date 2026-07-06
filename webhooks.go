@@ -14,15 +14,17 @@ type WebhooksService struct {
 
 // Webhook topics. A webhook subscribes to exactly one topic.
 const (
-	TopicPaymentsCreated    = "payments.created"
-	TopicPaymentsSigned     = "payments.signed"
-	TopicPaymentsAuthorized = "payments.authorized"
-	TopicPaymentsCharged    = "payments.charged"
-	TopicPaymentsCaptured   = "payments.captured"
-	TopicPaymentsVoided     = "payments.voided"
-	TopicPaymentsReleased   = "payments.released"
-	TopicPaymentsRefunded   = "payments.refunded"
-	TopicPaymentsFailed     = "payments.failed"
+	TopicPaymentsCreated       = "payments.created"
+	TopicPaymentsSigned        = "payments.signed"
+	TopicPaymentsAuthorized    = "payments.authorized"
+	TopicPaymentsCharged       = "payments.charged"
+	TopicPaymentsCaptured      = "payments.captured"
+	TopicPaymentsVoided        = "payments.voided"
+	TopicPaymentsReleased      = "payments.released"
+	TopicPaymentsRefunded      = "payments.refunded"
+	TopicPaymentsFailed        = "payments.failed"
+	TopicPaymentsDisputed      = "payments.disputed"
+	TopicPaymentsDisputeClosed = "payments.dispute_closed"
 )
 
 // Webhook (the webhook subscription shape, including the SharedSecret returned
