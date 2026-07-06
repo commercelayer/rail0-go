@@ -115,11 +115,9 @@ type Payment struct {
 	ChainID   int     `json:"chain_id,omitempty"`
 	// Deployed rail0 contract address.
 	Rail0Contract Address `json:"rail0_contract,omitempty"`
-	// EIP-3009 payload the payer must sign; present only when the payment is unsigned (may be null on transient RPC failure).
+	// EIP-3009 payload the payer must sign; present when the payment is unsigned (the gateway returns 502 signing_payload_unavailable if it can't be built).
 	SigningPayload *SigningPayload `json:"signing_payload,omitempty"`
-	// Why SigningPayload is null on the rare build failure ("rpc_unreachable", "rpc_error", or "error"); empty when the payload is present.
-	SigningPayloadError string        `json:"signing_payload_error,omitempty"`
-	Transactions        []Transaction `json:"transactions,omitempty"`
+	Transactions   []Transaction   `json:"transactions,omitempty"`
 }
 
 // SyncBlockchain Per-chain indexer config.
