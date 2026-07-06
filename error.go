@@ -10,6 +10,9 @@ type APIError struct {
 	Code string
 	// Message is the human-readable description.
 	Message string
+	// Reason is an optional sub-cause the gateway attaches to some errors
+	// (e.g. "rpc_unreachable" on a 502 signing_payload_unavailable); "" if absent.
+	Reason string
 }
 
 func (e *APIError) Error() string {

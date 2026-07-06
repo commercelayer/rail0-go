@@ -236,7 +236,7 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 			if code == "" && message == "" {
 				message = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			}
-			apiErr := &APIError{Status: resp.StatusCode, Code: code, Message: message}
+			apiErr := &APIError{Status: resp.StatusCode, Code: code, Message: message, Reason: errBody.Reason}
 			if c.logger != nil {
 				c.logger(LogEntry{
 					Method:       method,
