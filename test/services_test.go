@@ -125,45 +125,56 @@ func TestWallets_ListWithFilters(t *testing.T) {
 	}
 }
 
-func TestWallets_PaymentMethods(t *testing.T) {
+// PaymentMethods by account_id → all the merchant's active wallets, each with
+// its active token holdings nested (public endpoint, bare array, no JWT).
+func TestPaymentMethods_ByAccount(t *testing.T) {
 	mt := &mockTransport{t: t}
-	mt.push(listResp(200, []any{
+	mt.push(jsonResp(200, []any{
 		map[string]any{
 			"id": "w_1", "address": "0xpayee1", "active": true,
 			"tokens": []any{
-				map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xusdc"}},
-				// inactive holding → must be dropped by PaymentMethods
-				map[string]any{"active": false, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc2"}},
+				map[string]any{"active": true, "default": true, "token": map[string]any{"symbol": "USDC", "chain_id": 8453, "address": "0xusdc"}},
 			},
 		},
 		map[string]any{
-			"id": "w_2", "address": "0xpayee2", "active": true,
-			"tokens": []any{
-				map[string]any{"active": true, "token": map[string]any{"symbol": "USDC", "chain_id": 84532, "address": "0xusdc3"}},
-			},
+			"id": "w_2", "address": "0xpayee2", "active": true, "tokens": []any{},
 		},
-	}, "2"))
+	}))
 	client := newMockClient(t, mt)
 
-	methods, err := client.Wallets.PaymentMethods(context.Background(), "acc_1", rail0.PaymentMethodsParams{TokenSymbol: "USDC"})
+	wallets, err := client.PaymentMethods.List(context.Background(), rail0.PaymentMethodsQuery{AccountID: "acc_1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The method always requests active wallets and forwards the token filter.
+	if mt.recorded[0].URL.Path != "/payment_methods" || mt.recorded[0].URL.Query().Get("account_id") != "acc_1" {
+		t.Errorf("request: got %s?%s", mt.recorded[0].URL.Path, mt.recorded[0].URL.RawQuery)
+	}
+	if len(wallets) != 2 {
+		t.Fatalf("wallets: got %+v", wallets)
+	}
+	if wallets[0].Address != "0xpayee1" || len(wallets[0].Tokens) != 1 || wallets[0].Tokens[0].Token.Symbol != "USDC" || wallets[0].Tokens[0].Token.ChainID != 8453 {
+		t.Errorf("wallet[0]: %+v", wallets[0])
+	}
+}
+
+// PaymentMethods by address → sends the address handle instead of account_id.
+func TestPaymentMethods_ByAddress(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(200, []any{
+		map[string]any{"id": "w_1", "address": "0xabc", "active": true, "tokens": []any{}},
+	}))
+	client := newMockClient(t, mt)
+
+	wallets, err := client.PaymentMethods.List(context.Background(), rail0.PaymentMethodsQuery{Address: "0xABC"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	q := mt.recorded[0].URL.Query()
-	if q.Get("active") != "true" || q.Get("token_symbol") != "USDC" {
+	if q.Get("address") != "0xABC" || q.Has("account_id") {
 		t.Errorf("query: got %s", mt.recorded[0].URL.RawQuery)
 	}
-	// Flattened to one entry per (address, token, chain); the inactive holding
-	// on w_1 is dropped → 2 methods.
-	if len(methods) != 2 {
-		t.Fatalf("methods: got %+v", methods)
-	}
-	if methods[0].Address != "0xpayee1" || methods[0].ChainID != 8453 || methods[0].Token.Symbol != "USDC" {
-		t.Errorf("method[0]: %+v", methods[0])
-	}
-	if methods[1].Address != "0xpayee2" || methods[1].ChainID != 84532 {
-		t.Errorf("method[1]: %+v", methods[1])
+	if len(wallets) != 1 || wallets[0].Address != "0xabc" {
+		t.Errorf("wallets: %+v", wallets)
 	}
 }
 
@@ -204,7 +215,7 @@ func TestWallets_Create(t *testing.T) {
 	if req.Method != http.MethodPost || req.URL.Path != "/accounts/acc_1/wallets" {
 		t.Errorf("got %s %s", req.Method, req.URL.Path)
 	}
-	if res.ID != "w_1" || res.AccountID != "acc_1" {
+	if res.ID != "w_1" || res.Address != "0xabc" {
 		t.Errorf("unexpected wallet: %+v", res)
 	}
 }

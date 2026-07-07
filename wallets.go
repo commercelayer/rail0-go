@@ -74,68 +74,7 @@ func (s *WalletsService) List(ctx context.Context, accountID string, params ...L
 	return &PaginatedResponse[WalletWithTokens]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
-// PaymentMethodsParams filters the payment methods returned by
-// WalletsService.PaymentMethods.
-type PaymentMethodsParams struct {
-	ChainID     int    // restrict to this chain id; 0 = all chains
-	TokenSymbol string // restrict to this token symbol (e.g. "USDC"); "" = all
-}
-
-// PaymentMethod is one concrete way to pay a merchant: send Token, on chain
-// ChainID, to the wallet Address. It is the flattened (address × token × chain)
-// projection of the account's active wallets and their active token holdings.
-type PaymentMethod struct {
-	Address string // active wallet address — the payee to pay
-	ChainID int    // EVM chain id the token lives on
-	Token   Token  // token to pay with (symbol, address, decimals, chain_id)
-}
-
-// PaymentMethods returns the account's available payment methods: the active
-// wallet addresses with their active token holdings, flattened to one entry per
-// (address, token, chain) and optionally filtered by chain and/or token symbol.
-//
-// It is a convenience over List for a payer choosing where/how to pay a
-// merchant: it requests only active wallets, pages through all of them, drops
-// inactive token holdings, and naturally omits wallets left with no matching
-// token. Requires JWT.
-func (s *WalletsService) PaymentMethods(ctx context.Context, accountID string, params ...PaymentMethodsParams) ([]PaymentMethod, error) {
-	var p PaymentMethodsParams
-	if len(params) > 0 {
-		p = params[0]
-	}
-	active := true
-	const perPage = 100
-	methods := []PaymentMethod{}
-	for page := 1; ; page++ {
-		resp, err := s.List(ctx, accountID, ListWalletsParams{
-			Active:      &active,
-			ChainID:     p.ChainID,
-			TokenSymbol: p.TokenSymbol,
-			Page:        page,
-			PerPage:     perPage,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, w := range resp.Data {
-			for _, h := range w.Tokens {
-				if !h.Active {
-					continue
-				}
-				methods = append(methods, PaymentMethod{
-					Address: w.Address,
-					ChainID: h.Token.ChainID,
-					Token:   h.Token,
-				})
-			}
-		}
-		// Last page reached: a short (or empty) page, or the total is covered.
-		if len(resp.Data) < perPage || page*perPage >= resp.Meta.Total {
-			break
-		}
-	}
-	return methods, nil
-}
+// Buyer-facing payment-method discovery lives on the public PaymentMethodsService.
 
 // Get fetches a single wallet by its id or 0x address (requires JWT). The
 // address is unique per account, so `idOrAddress` may be either the wallet UUID

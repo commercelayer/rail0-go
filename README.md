@@ -48,6 +48,7 @@ resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 | `client.Chains` | Public blockchain catalog |
 | `client.Tokens` | Public token catalog |
 | `client.Wallets` | Wallet management under `/accounts/:id/wallets` (JWT) |
+| `client.PaymentMethods` | Public discovery of a merchant's accepted wallets/tokens (`GET /payment_methods`, no JWT) |
 | `client.Payments` | Full payment lifecycle |
 | `client.Webhooks` | Webhook subscription management (JWT) |
 
@@ -85,10 +86,12 @@ fmt.Println(h.Status, h.ActiveChains)
 
 ## Wallets (under accounts, JWT)
 
-The list endpoint returns the account's wallets, each with its token holdings
-nested under `Tokens` (`rail0.WalletWithTokens`) — a wallet with no tokens is
-still returned (`Tokens` empty), never omitted. Single-get/create/update return
-the plain `rail0.Wallet`.
+All wallet endpoints are behind SIWE — a merchant manages **its own** wallets
+here. The list endpoint returns the account's wallets, each with its token
+holdings nested under `Tokens` (`rail0.WalletWithTokens`) — a wallet with no
+tokens is still returned (`Tokens` empty), never omitted. Single-get/create/
+update return the plain `rail0.Wallet`. (Buyer-facing discovery of a merchant's
+wallets is public and lives on `client.PaymentMethods`, below.)
 
 ```go
 // List wallets, each with its tokens nested. ChainID/TokenSymbol restrict the
@@ -102,17 +105,6 @@ wallets, _ := client.Wallets.List(ctx, accountID, rail0.ListWalletsParams{
     Sort:        "-created_at",
 })
 // wallets.Data[i].Tokens[j].Token.Symbol
-
-// Payment methods: the merchant's active addresses with their active tokens,
-// flattened to one entry per (address, token, chain). Handy for a payer
-// choosing where/how to pay. Optionally filter by chain and/or token symbol.
-methods, _ := client.Wallets.PaymentMethods(ctx, accountID, rail0.PaymentMethodsParams{
-    ChainID:     8453,   // optional
-    TokenSymbol: "USDC", // optional
-})
-for _, m := range methods {
-    fmt.Println(m.Address, m.ChainID, m.Token.Symbol) // pay m.Token to m.Address on m.ChainID
-}
 
 // Get a single wallet by id or 0x address (address is unique per account)
 w, _ := client.Wallets.Get(ctx, accountID, "0xABC…")
@@ -141,6 +133,30 @@ for _, c := range bal.Balances {
         continue // RPC unreachable for this chain
     }
     fmt.Println(c.ChainID, c.Native.Amount, len(c.Tokens))
+}
+```
+
+## Payment methods (public)
+
+Public, buyer-facing discovery of a merchant's accepted payment methods — a
+payer that only knows the merchant can list the active wallet/token combinations
+it accepts, without holding the merchant's session. Provide **exactly one** of
+`AccountID` (all the merchant's active wallets) or `Address` (just that one
+wallet); it returns `[]rail0.WalletWithTokens` (only active wallets and active
+holdings). No JWT required.
+
+```go
+// By merchant account id — all the merchant's active wallets.
+methods, _ := client.PaymentMethods.List(ctx, rail0.PaymentMethodsQuery{AccountID: accountID})
+
+// Or by a single wallet address the payer already knows.
+methods, _ = client.PaymentMethods.List(ctx, rail0.PaymentMethodsQuery{Address: "0xABC…"})
+
+for _, w := range methods {
+    for _, h := range w.Tokens {
+        // pay h.Token (h.Token.Symbol on h.Token.ChainID) to w.Address
+        fmt.Println(w.Address, h.Token.Symbol, h.Token.ChainID)
+    }
 }
 ```
 

@@ -10,6 +10,8 @@ package rail0
 type Client struct {
 	// Wallets exposes account wallet management under /accounts/:id/wallets (JWT).
 	Wallets *WalletsService
+	// PaymentMethods exposes the public GET /payment_methods discovery (no JWT).
+	PaymentMethods *PaymentMethodsService
 	// Auth exposes SIWE authentication: GetNonce, Verify, Login.
 	Auth *AuthService
 	// Chains exposes the public blockchain catalog.
@@ -28,12 +30,13 @@ type Client struct {
 func NewClient(opts ClientOptions) *Client {
 	h := newHTTPClient(opts)
 	return &Client{
-		Wallets:  &WalletsService{http: h},
-		Auth:     &AuthService{http: h},
-		Chains:   &ChainsService{http: h},
-		Tokens:   &TokensService{http: h},
-		Payments: &PaymentsService{http: h},
-		Webhooks: &WebhooksService{http: h},
-		Health:   &HealthService{http: h},
+		Wallets:        &WalletsService{http: h},
+		PaymentMethods: &PaymentMethodsService{http: h},
+		Auth:           &AuthService{http: h},
+		Chains:         &ChainsService{http: h},
+		Tokens:         &TokensService{http: h},
+		Payments:       &PaymentsService{http: h},
+		Webhooks:       &WebhooksService{http: h},
+		Health:         &HealthService{http: h},
 	}
 }
