@@ -479,3 +479,24 @@ func TestSubmit_DecodesTransaction(t *testing.T) {
 		t.Errorf("signed_transaction: got %s", decoded.SignedTransaction)
 	}
 }
+
+// sanity: SubmitByHash sends transaction_hash and decodes the Transaction reply
+func TestSubmitByHash_DecodesTransaction(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(202, mockSubmittedTxResp))
+	client := newMockClient(t, mt)
+
+	res, err := client.Payments.SubmitByHash(context.Background(), mockPaymentID, rail0.OpCapture, rail0.SubmitByHashRequest{TransactionHash: "0xabc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "submitting" {
+		t.Errorf("status: got %s", res.Status)
+	}
+	body, _ := io.ReadAll(mt.recorded[0].Body)
+	var decoded rail0.SubmitByHashRequest
+	_ = json.Unmarshal(body, &decoded)
+	if decoded.TransactionHash != "0xabc" {
+		t.Errorf("transaction_hash: got %s", decoded.TransactionHash)
+	}
+}

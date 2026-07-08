@@ -211,6 +211,11 @@ client.Payments.Refund(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransa
 client.Payments.Prepare(ctx, rail0ID, rail0.OpVoid)
 client.Payments.Submit(ctx, rail0ID, rail0.OpVoid, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
+// MetaMask (and any wallet that signs + broadcasts in one step) reports the
+// broadcast tx hash instead of a raw signed transaction. Record it with
+// SubmitByHash (POST /payments/{id}/{op}/submitted); the caller must be the payee.
+client.Payments.SubmitByHash(ctx, rail0ID, rail0.OpCapture, rail0.SubmitByHashRequest{TransactionHash: "0x..."})
+
 // Transactions for a payment
 txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{Sort: "-submitted_at"})
 ```
