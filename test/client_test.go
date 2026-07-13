@@ -405,6 +405,28 @@ func TestAuthorize_PostsToCorrectURL(t *testing.T) {
 	}
 }
 
+func TestSubmitByHash_PostsToSubmittedURL(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(202, mockSubmitResp))
+	client := newMockClient(t, mt)
+
+	_, err := client.Payments.SubmitByHash(context.Background(), mockPaymentID, rail0.OpCapture, rail0.SubmitByHashRequest{
+		TransactionHash: "0x" + strings.Repeat("ab", 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := mt.recorded[0]
+	if req.Method != http.MethodPost {
+		t.Errorf("method: got %s, want POST", req.Method)
+	}
+	wantPath := "/payments/" + mockPaymentID + "/capture/submitted"
+	if req.URL.Path != wantPath {
+		t.Errorf("path: got %s, want %s", req.URL.Path, wantPath)
+	}
+}
+
 func TestAuthorize_ReturnsSubmitResponse(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(202, mockSubmitResp))

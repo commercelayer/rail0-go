@@ -232,6 +232,16 @@ func (s *PaymentsService) Submit(ctx context.Context, paymentID Bytes32, op stri
 	return &out, nil
 }
 
+// SubmitByHash records a transaction the caller broadcast themselves
+// (MetaMask eth_sendTransaction) for an operation (POST /payments/{id}/{op}/submitted); HTTP 202.
+func (s *PaymentsService) SubmitByHash(ctx context.Context, paymentID Bytes32, op string, params SubmitByHashRequest) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.post(ctx, fmt.Sprintf("/payments/%s/%s/submitted", paymentID, op), params, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ── Per-operation convenience wrappers ─────────────────────────────────────────
 
 // AuthorizePrepare builds the unsigned authorize() transaction.

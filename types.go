@@ -41,6 +41,12 @@ type SubmitTransactionRequest struct {
 	SignedTransaction string `json:"signed_transaction"`
 }
 
+// SubmitByHashRequest reports a transaction the caller broadcast themselves
+// (MetaMask/wallet flow) to POST /payments/{id}/{op}/submitted.
+type SubmitByHashRequest struct {
+	TransactionHash string `json:"transaction_hash"`
+}
+
 // APIErrorBody is the JSON shape of error responses from the RAIL0 API.
 // Used internally by the HTTP client to parse non-2xx responses. The gateway
 // puts the machine-readable identifier in `status` (occasionally `code`) and the
