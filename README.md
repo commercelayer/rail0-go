@@ -1,8 +1,8 @@
 # rail0-go
 
-Go SDK for the [RAIL0](https://github.com/commercelayer/rail0) stablecoin payment API.
+Go SDK for the [RAIL0](https://github.com/commercelayer/rail0) stablecoin payment gateway.
 
-RAIL0 is an immutable EVM smart contract that brings the authorize → capture → refund lifecycle of card networks to stablecoin payments — no intermediaries, no protocol fees, no permission required. This SDK wraps the REST API that sits in front of the contract.
+RAIL0 is an immutable EVM smart contract that brings the authorize → capture → refund lifecycle of card networks to stablecoin payments — no intermediaries, no protocol fees, no permission required. This SDK is a REST client for the RAIL0 gateway that sits in front of the contract.
 
 ## Requirements
 
