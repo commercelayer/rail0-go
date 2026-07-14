@@ -44,8 +44,10 @@ type TokenDomain struct {
 	VerifyingContract Address
 }
 
-// Eip3009Signature is the EIP-3009 transferWithAuthorization signature,
-// ready to spread into AuthorizeParams or ChargeParams.
+// Eip3009Signature is the EIP-3009 transferWithAuthorization signature. Pack it
+// into the 65-byte hex string PayerSignatureRequest expects with:
+//
+//	packed := fmt.Sprintf("0x%s%s%02x", sig.R[2:], sig.S[2:], sig.V) // r || s || v
 type Eip3009Signature struct {
 	// V is the recovery identifier (27 or 28).
 	V int
@@ -229,31 +231,37 @@ func SignTransferWithAuthorization(privateKey []byte, domain TokenDomain, params
 	return doSign(privateKey, digest)
 }
 
-// SignAuthorize signs the EIP-3009 payload required by an Authorize call.
+// SignAuthorize signs the EIP-3009 payload required by an Authorize call. The
+// nonce comes from the create response's signing payload; the packed signature
+// is deposited via Payments.Sign (not spread into the submit call).
 //
-//	hashResp, _ := client.Payments.Hash(ctx, payment)
-//	nonce, _    := client.Payments.AuthorizeNonce(ctx, paymentID, hashResp.Hash)
+//	created, _ := client.Payments.Create(ctx, req)
+//	cfg := rail0.PaymentConfig{Payer: created.Payer /* …from the create response */}
 //	sig, _ := rail0.SignAuthorize(rail0.SignPaymentParams{
-//	    PrivateKey: key, Payment: payment, Amount: big.NewInt(50_000_000),
-//	    Nonce: nonce.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
+//	    PrivateKey: key, Payment: cfg, Amount: big.NewInt(50_000_000),
+//	    Nonce: created.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
 //	})
-//	client.Payments.Authorize(ctx, paymentID, rail0.AuthorizeParams{
-//	    Payment: payment, Amount: "50000000", V: sig.V, R: sig.R, S: sig.S,
-//	})
+//	packed := fmt.Sprintf("0x%s%s%02x", sig.R[2:], sig.S[2:], sig.V)
+//	client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
 func SignAuthorize(params SignPaymentParams) (Eip3009Signature, error) {
 	digest := buildDigest(params.TokenDomain, params.Payment.Payer, params.ContractAddress,
 		params.Amount, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)
 	return doSign(params.PrivateKey, digest)
 }
 
-// SignCharge signs the EIP-3009 payload required by a Charge call.
+// SignCharge signs the EIP-3009 payload required by a Charge call. Identical
+// digest to SignAuthorize; the operation is distinguished by the nonce prefix
+// the gateway encodes. The nonce comes from the create response's signing
+// payload, and the packed signature is deposited via Payments.Sign.
 //
-//	hashResp, _ := client.Payments.Hash(ctx, payment)
-//	nonce, _    := client.Payments.ChargeNonce(ctx, paymentID, hashResp.Hash)
+//	created, _ := client.Payments.Create(ctx, req) // req.Mode == "charge"
+//	cfg := rail0.PaymentConfig{Payer: created.Payer /* …from the create response */}
 //	sig, _ := rail0.SignCharge(rail0.SignPaymentParams{
-//	    PrivateKey: key, Payment: payment, Amount: big.NewInt(25_000_000),
-//	    Nonce: nonce.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
+//	    PrivateKey: key, Payment: cfg, Amount: big.NewInt(25_000_000),
+//	    Nonce: created.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
 //	})
+//	packed := fmt.Sprintf("0x%s%s%02x", sig.R[2:], sig.S[2:], sig.V)
+//	client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
 func SignCharge(params SignPaymentParams) (Eip3009Signature, error) {
 	digest := buildDigest(params.TokenDomain, params.Payment.Payer, params.ContractAddress,
 		params.Amount, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)

@@ -61,8 +61,16 @@ func (s *AuthService) Verify(ctx context.Context, req AuthRequest) (*AuthRespons
 //  4. Verifies the signature with the API and returns a JWT
 //
 // privateKey must be 32 raw bytes — use HexToPrivateKey to convert from hex.
-// domain is the host of the API server (e.g. "api.rail0.xyz").
-func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain string) (*AuthResponse, error) {
+// domain is the host of the API server (e.g. "api.rail0.xyz"). The optional
+// chainID (default 1 when omitted) is the chain id embedded in the SIWE message
+// and must match the gateway's SIWE_CHAIN_ID policy — override only when the
+// gateway is configured with a different login chain.
+func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain string, chainID ...int) (*AuthResponse, error) {
+	loginChain := 1
+	if len(chainID) > 0 && chainID[0] != 0 {
+		loginChain = chainID[0]
+	}
+
 	nonceResp, err := s.GetNonce(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("rail0: get nonce: %w", err)
@@ -74,7 +82,7 @@ func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain strin
 	}
 
 	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonceResp.Nonce, map[string]interface{}{
-		"chainId":   1,
+		"chainId":   loginChain,
 		"statement": "Sign in to RAIL0",
 	})
 	if err != nil {

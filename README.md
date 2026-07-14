@@ -6,7 +6,7 @@ RAIL0 is an immutable EVM smart contract that brings the authorize → capture �
 
 ## Requirements
 
-Go ≥ 1.22
+Go ≥ 1.25
 
 ## Installation
 
@@ -57,7 +57,7 @@ resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 ```go
 // 1. Get a nonce (POST /auth/nonces)
 nonce, _ := client.Auth.GetNonce(ctx)
-_ = nonce.Value // embed in the SIWE message
+_ = nonce.Nonce // embed in the SIWE message
 
 // 2. Build + sign the EIP-4361 message, then verify (POST /auth)
 resp, _ := client.Auth.Verify(ctx, rail0.AuthRequest{
@@ -68,13 +68,17 @@ resp, _ := client.Auth.Verify(ctx, rail0.AuthRequest{
 
 // Or do the whole flow with a raw private key:
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
+
+// Login embeds SIWE chain id 1 by default. Pass an explicit chain id to match a
+// gateway whose SIWE_CHAIN_ID policy differs:
+resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz", 5042002)
 ```
 
 ## Catalog (public)
 
 ```go
-chains, _ := client.Chains.List(ctx)        // GET /blockchains
-tokens, _ := client.Tokens.List(ctx, 8453)  // GET /tokens?chain_id=8453
+chains, _ := client.Chains.List(ctx)                                      // GET /blockchains
+tokens, _ := client.Tokens.List(ctx, rail0.ListTokensParams{ChainID: 8453}) // GET /tokens?chain_id=8453
 ```
 
 ## Health
@@ -242,6 +246,43 @@ client.Payments.CloseDispute(ctx, rail0ID, rail0.SubmitTransactionRequest{Signed
 disputes, _ := client.Payments.Disputes(ctx, rail0ID)
 ```
 
+## Signing
+
+The SDK signs locally — the gateway never holds a private key. Two kinds of
+signature are needed across the lifecycle:
+
+- **EIP-3009 authorization** (off-chain), stored via `Payments.Sign` / supplied to
+  `RefundPrepare` phase-2.
+- **EIP-1559 transaction** signing for each `prepare`→`submit` step.
+
+```go
+key, _ := rail0.HexToPrivateKey("0x…") // 0x-hex → 32 raw bytes
+
+// EIP-1559: sign a prepare step's unsigned_transaction → raw hex for submit.
+raw, _ := rail0.SignTransaction(tx.UnsignedTransaction, key)
+client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: raw})
+
+// EIP-3009 payer authorization (authorize/charge). SignCharge is the charge variant.
+sig, _ := rail0.SignAuthorize(rail0.SignPaymentParams{
+    PrivateKey: key, Payment: cfg, Amount: big.NewInt(50_000_000),
+    Nonce: created.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
+})
+// Pack {v,r,s} into the 65-byte hex the gateway expects (r || s || v):
+packed := fmt.Sprintf("0x%s%s%02x", sig.R[2:], sig.S[2:], sig.V)
+client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
+
+// EIP-3009 payee refund authorization: SignReceiveWithAuthorization (from a
+// PaymentConfig) or SignReceiveWithAuthorizationRaw (from explicit payload fields).
+```
+
+Signing helpers: `HexToPrivateKey`, `SignTransaction`, `SignTransferWithAuthorization`,
+`SignAuthorize`, `SignCharge`, `SignReceiveWithAuthorization`, `SignReceiveWithAuthorizationRaw`.
+
+### Stablecoin registry
+
+`ChainInfo(chain)`, `EIP3009Tokens(chain)`, and `EIP2612Tokens(chain)` expose a
+static registry of known stablecoins per chain (RAIL0 requires EIP-3009 support).
+
 ## Webhooks (JWT)
 
 ```go
@@ -322,9 +363,11 @@ go build ./...
 > go run gen/generate.go
 > ```
 >
-> The client method files (`auth.go`, `payments.go`, `accounts.go`,
-> `webhooks.go`, `health.go`, `chains.go`, `tokens.go`) are hand-maintained and
-> are never overwritten by the generator.
+> The client method files (`auth.go`, `payments.go`, `wallets.go`,
+> `payment_methods.go`, `webhooks.go`, `health.go`, `chains.go`, `tokens.go`),
+> the signing helpers (`signing.go`, `transaction.go`), and the stablecoin
+> registry (`stablecoins.go`) are hand-maintained and never overwritten by the
+> generator.
 
 ## License
 
