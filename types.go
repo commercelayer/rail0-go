@@ -47,6 +47,15 @@ type SubmitByHashRequest struct {
 	TransactionHash string `json:"transaction_hash"`
 }
 
+// DisputeDetail is a Dispute with its parent payment embedded (the gateway's
+// DisputeDetail schema), returned by the account-level DisputesService.List.
+// The embedded Dispute promotes its fields, so a DisputeDetail marshals/unmarshals
+// exactly like a Dispute plus the extra `payment` object.
+type DisputeDetail struct {
+	Dispute
+	Payment *Payment `json:"payment,omitempty"`
+}
+
 // APIErrorBody is the JSON shape of error responses from the RAIL0 API.
 // Used internally by the HTTP client to parse non-2xx responses. The gateway
 // puts the machine-readable identifier in `status` (occasionally `code`) and the

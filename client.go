@@ -20,6 +20,8 @@ type Client struct {
 	Tokens *TokensService
 	// Payments exposes the full payment lifecycle.
 	Payments *PaymentsService
+	// Disputes exposes the account-level dispute list (open and closed).
+	Disputes *DisputesService
 	// Webhooks exposes webhook subscription management (JWT).
 	Webhooks *WebhooksService
 	// Health exposes the gateway liveness/readiness check.
@@ -36,6 +38,7 @@ func NewClient(opts ClientOptions) *Client {
 		Chains:         &ChainsService{http: h},
 		Tokens:         &TokensService{http: h},
 		Payments:       &PaymentsService{http: h},
+		Disputes:       &DisputesService{http: h},
 		Webhooks:       &WebhooksService{http: h},
 		Health:         &HealthService{http: h},
 	}

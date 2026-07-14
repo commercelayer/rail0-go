@@ -244,6 +244,14 @@ client.Payments.CloseDispute(ctx, rail0ID, rail0.SubmitTransactionRequest{Signed
 
 // Open/close history for a payment
 disputes, _ := client.Payments.Disputes(ctx, rail0ID)
+
+// Account-level: every dispute (open AND closed) across the caller's payments,
+// each with its parent payment embedded. Unlike the `disputed` flag on
+// Payments.List (current-state), this still surfaces closed disputes.
+all, _ := client.Disputes.List(ctx, rail0.ListDisputesParams{Status: "closed"})
+for _, d := range all.Data {
+    _ = d.Payment.Rail0Id // embedded payment
+}
 ```
 
 ## Signing

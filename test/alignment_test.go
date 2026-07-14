@@ -148,6 +148,40 @@ func TestStablecoinRegistry(t *testing.T) {
 	_ = rail0.EIP2612Tokens("ethereum") // exercised; may be empty on some chains
 }
 
+func TestDisputesList(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(listResp(200, []map[string]any{
+		{
+			"id":         "d1",
+			"payment_id": "pay_1",
+			"status":     "closed",
+			"closed_by":  "payee",
+			"payment":    map[string]any{"rail0_id": mockPaymentID, "amount": "1000000", "status": "refunded"},
+		},
+	}, "1"))
+	client := newMockClient(t, mt)
+
+	closed := "closed"
+	res, err := client.Disputes.List(context.Background(), rail0.ListDisputesParams{Status: closed})
+	if err != nil {
+		t.Fatalf("Disputes.List: %v", err)
+	}
+	if len(res.Data) != 1 {
+		t.Fatalf("want 1 dispute, got %d", len(res.Data))
+	}
+	d := res.Data[0]
+	if d.Status != "closed" || d.ClosedBy != "payee" {
+		t.Errorf("unexpected dispute: %+v", d)
+	}
+	// The embedded payment is what makes the account-level list renderable.
+	if d.Payment == nil || d.Payment.Rail0Id != mockPaymentID {
+		t.Errorf("expected embedded payment with rail0_id, got %+v", d.Payment)
+	}
+	if req := mt.recorded[0]; req.URL.Path != "/disputes" || req.URL.RawQuery != "status=closed" {
+		t.Errorf("unexpected request: %s?%s", req.URL.Path, req.URL.RawQuery)
+	}
+}
+
 func TestAuthLoginChainID(t *testing.T) {
 	key, err := rail0.HexToPrivateKey(privateKeyHex)
 	if err != nil {
