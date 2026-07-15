@@ -217,7 +217,8 @@ client.Payments.Submit(ctx, rail0ID, rail0.OpVoid, rail0.SubmitTransactionReques
 
 // MetaMask (and any wallet that signs + broadcasts in one step) reports the
 // broadcast tx hash instead of a raw signed transaction. Record it with
-// SubmitByHash (POST /payments/{id}/{op}/submitted); the caller must be the payee.
+// SubmitByHash (POST /payments/{id}/{op}/submitted). Payee-only for the merchant
+// operations; `release` accepts either the payer or payee.
 client.Payments.SubmitByHash(ctx, rail0ID, rail0.OpCapture, rail0.SubmitByHashRequest{TransactionHash: "0x..."})
 
 // Transactions for a payment
@@ -241,6 +242,11 @@ client.Payments.Dispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTrans
 // Close a dispute (payer only)
 tx, _ = client.Payments.CloseDisputePrepare(ctx, rail0ID)
 client.Payments.CloseDispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
+
+// MetaMask buyer: report the broadcast dispute / close-dispute tx by hash instead
+// of a raw signed tx (payer-only; the payer authenticates account-less via SIWE).
+client.Payments.DisputeSubmitByHash(ctx, rail0ID, rail0.SubmitByHashRequest{TransactionHash: "0x..."})
+client.Payments.CloseDisputeSubmitByHash(ctx, rail0ID, rail0.SubmitByHashRequest{TransactionHash: "0x..."})
 
 // Open/close history for a payment
 disputes, _ := client.Payments.Disputes(ctx, rail0ID)

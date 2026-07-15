@@ -372,6 +372,30 @@ func (s *PaymentsService) CloseDispute(ctx context.Context, paymentID Bytes32, p
 	return &out, nil
 }
 
+// DisputeSubmitByHash records a dispute() transaction the caller broadcast
+// themselves (MetaMask eth_sendTransaction) — the payer's counterpart to
+// SubmitByHash (POST /payments/{id}/dispute/submitted); HTTP 202. Payer-only:
+// the caller must be authenticated as the payment's payer (an account-less SIWE
+// token is fine), since the bare hash carries no signature to authorize it.
+func (s *PaymentsService) DisputeSubmitByHash(ctx context.Context, paymentID Bytes32, params SubmitByHashRequest) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/submitted", params, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CloseDisputeSubmitByHash records a closeDispute() transaction the caller
+// broadcast themselves (POST /payments/{id}/dispute/close/submitted); HTTP 202.
+// Payer-only, same contract as DisputeSubmitByHash.
+func (s *PaymentsService) CloseDisputeSubmitByHash(ctx context.Context, paymentID Bytes32, params SubmitByHashRequest) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close/submitted", params, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListDisputesParams holds optional query parameters for Payments.Disputes.
 type ListDisputesParams struct {
 	Status  string // filter by dispute status ("open" or "closed")

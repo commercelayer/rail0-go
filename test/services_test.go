@@ -500,3 +500,37 @@ func TestSubmitByHash_DecodesTransaction(t *testing.T) {
 		t.Errorf("transaction_hash: got %s", decoded.TransactionHash)
 	}
 }
+
+// The payer's MetaMask report-by-hash endpoints post the hash to the
+// dispute/close-dispute submitted paths.
+func TestDisputeSubmitByHash_PostsToDisputeSubmitted(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(202, mockSubmittedTxResp))
+	client := newMockClient(t, mt)
+
+	if _, err := client.Payments.DisputeSubmitByHash(context.Background(), mockPaymentID, rail0.SubmitByHashRequest{TransactionHash: "0xdisp"}); err != nil {
+		t.Fatal(err)
+	}
+	if mt.recorded[0].URL.Path != "/payments/"+mockPaymentID+"/dispute/submitted" {
+		t.Errorf("path: got %s", mt.recorded[0].URL.Path)
+	}
+	body, _ := io.ReadAll(mt.recorded[0].Body)
+	var decoded rail0.SubmitByHashRequest
+	_ = json.Unmarshal(body, &decoded)
+	if decoded.TransactionHash != "0xdisp" {
+		t.Errorf("transaction_hash: got %s", decoded.TransactionHash)
+	}
+}
+
+func TestCloseDisputeSubmitByHash_PostsToCloseSubmitted(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(202, mockSubmittedTxResp))
+	client := newMockClient(t, mt)
+
+	if _, err := client.Payments.CloseDisputeSubmitByHash(context.Background(), mockPaymentID, rail0.SubmitByHashRequest{TransactionHash: "0xclose"}); err != nil {
+		t.Fatal(err)
+	}
+	if mt.recorded[0].URL.Path != "/payments/"+mockPaymentID+"/dispute/close/submitted" {
+		t.Errorf("path: got %s", mt.recorded[0].URL.Path)
+	}
+}
