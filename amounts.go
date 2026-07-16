@@ -1,0 +1,57 @@
+package rail0
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+var amountRe = regexp.MustCompile(`^\d+(\.\d+)?$`)
+
+// ToBaseUnits converts a human decimal amount ("1.50") to its base-unit integer
+// string ("1500000") for the given token decimals, using string math so there is
+// no float rounding. Fractional digits beyond decimals are truncated (not
+// rounded). Returns an error on a malformed amount or negative decimals. Shared
+// with the TS SDK's toBaseUnits so every consumer converts amounts identically.
+func ToBaseUnits(human string, decimals int) (string, error) {
+	if decimals < 0 {
+		return "", fmt.Errorf("invalid decimals: %d", decimals)
+	}
+	s := strings.TrimSpace(human)
+	if !amountRe.MatchString(s) {
+		return "", fmt.Errorf("invalid amount: %q", human)
+	}
+	whole, frac, _ := strings.Cut(s, ".")
+	fracPadded := frac + strings.Repeat("0", decimals)
+	if len(fracPadded) > decimals {
+		fracPadded = fracPadded[:decimals]
+	}
+	combined := strings.TrimLeft(whole+fracPadded, "0")
+	if combined == "" {
+		return "0", nil
+	}
+	return combined, nil
+}
+
+// FormatAmount renders a base-unit integer string ("1500000") as a human decimal
+// ("1.5") for the given decimals. Trailing zeros in the fraction are trimmed and a
+// whole amount has no decimal point. Returns the input unchanged if it isn't a
+// non-negative integer string.
+func FormatAmount(base string, decimals int) string {
+	s := strings.TrimSpace(base)
+	if s == "" || strings.TrimLeft(s, "0123456789") != "" {
+		return base
+	}
+	if decimals <= 0 {
+		return s
+	}
+	for len(s) < decimals+1 {
+		s = "0" + s
+	}
+	whole := s[:len(s)-decimals]
+	frac := strings.TrimRight(s[len(s)-decimals:], "0")
+	if frac == "" {
+		return whole
+	}
+	return whole + "." + frac
+}

@@ -297,6 +297,18 @@ Signing helpers: `HexToPrivateKey`, `SignTransaction`, `SignTransferWithAuthoriz
 `ChainInfo(chain)`, `EIP3009Tokens(chain)`, and `EIP2612Tokens(chain)` expose a
 static registry of known stablecoins per chain (RAIL0 requires EIP-3009 support).
 
+## Amounts
+
+Convert between a human decimal and the token's base-unit integer string with
+string math (no float rounding):
+
+```go
+b, _ := rail0.ToBaseUnits("1.50", 6) // "1500000" (USDC has 6 decimals)
+rail0.FormatAmount("1500000", 6)      // "1.5"     (trailing zeros trimmed)
+```
+
+Fractional digits beyond `decimals` are truncated; a malformed amount errors.
+
 ## Webhooks (JWT)
 
 ```go
@@ -358,9 +370,14 @@ if err != nil {
     var apiErr *rail0.APIError
     if errors.As(err, &apiErr) {
         fmt.Println(apiErr.Status, apiErr.Code, apiErr.Message)
+        fmt.Println(apiErr.Hint()) // actionable next step for known codes, "" otherwise
     }
 }
 ```
+
+`apiErr.Hint()` (or `rail0.DescribeError(code)`) returns an actionable next step for
+known error codes — gateway state guards and contract reverts — e.g.
+`refund_expired` → _"the refund window has closed…"_; `""` for an unknown code.
 
 ## Development
 
