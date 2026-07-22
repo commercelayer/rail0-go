@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -65,6 +67,13 @@ func DebugLogger(e LogEntry) {
 type ClientOptions struct {
 	// BaseURL is the RAIL0 API base URL, e.g. "https://api.rail0.xyz". Trailing slash is stripped.
 	BaseURL string
+	// Token seeds the JWT sent as "Authorization: Bearer <token>" on every request.
+	// It is applied after Headers (so it wins over a static Authorization header) and
+	// can be replaced later with Client.SetToken — or set automatically by Auth.Login /
+	// Auth.Verify, which stash the JWT they obtain on the shared client. A per-request
+	// Authorization header (postWithHeaders) still overrides it. Leave empty for the
+	// public endpoints or to authenticate via Headers instead.
+	Token string
 	// Headers are merged into every request. Useful for API keys or correlation IDs.
 	Headers map[string]string
 	// Timeout is the per-request timeout. Default: 30s.
@@ -77,6 +86,11 @@ type ClientOptions struct {
 	// RetryDelay is the base delay between retries; doubles each attempt (exponential backoff).
 	// Default: 200ms.
 	RetryDelay time.Duration
+	// RetryOn429 opts in to retrying a 429 Too Many Requests response, sleeping for the
+	// server's Retry-After header (falling back to the exponential backoff when the header
+	// is absent) instead of the immediate backoff used for network errors. It draws on the
+	// same MaxRetries budget, so set MaxRetries > 0 for it to take effect. Default: false.
+	RetryOn429 bool
 	// Transport overrides the HTTP transport. When nil, http.DefaultTransport is used.
 	// Useful for testing or for custom TLS/proxy configuration.
 	Transport http.RoundTripper
@@ -89,7 +103,27 @@ type httpClient struct {
 	logger     Logger
 	maxRetries int
 	retryDelay time.Duration
+	retryOn429 bool
 	http       *http.Client
+
+	// mu guards token, which may be mutated after construction (SetToken, or the
+	// automatic stash by Auth.Login/Verify) while requests read it concurrently.
+	mu    sync.RWMutex
+	token string
+}
+
+// SetToken replaces the JWT sent as "Authorization: Bearer <token>" on subsequent
+// requests. Safe to call concurrently with in-flight requests. Pass "" to clear it.
+func (c *httpClient) SetToken(token string) {
+	c.mu.Lock()
+	c.token = token
+	c.mu.Unlock()
+}
+
+func (c *httpClient) getToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.token
 }
 
 func newHTTPClient(opts ClientOptions) *httpClient {
@@ -112,7 +146,9 @@ func newHTTPClient(opts ClientOptions) *httpClient {
 		logger:     opts.Logger,
 		maxRetries: opts.MaxRetries,
 		retryDelay: retryDelay,
+		retryOn429: opts.RetryOn429,
 		http:       &http.Client{Transport: opts.Transport},
+		token:      opts.Token,
 	}
 }
 
@@ -162,10 +198,18 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 	url := c.baseURL + path
 	maxAttempts := c.maxRetries + 1
 	trackAttempts := c.maxRetries > 0
+	// override carries the delay to wait before the NEXT attempt; < 0 means "use the
+	// exponential backoff". A retried 429 sets it to its Retry-After so we honour the
+	// server's pacing instead of the immediate network-error backoff.
+	override := time.Duration(-1)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			delay := c.retryDelay * time.Duration(1<<uint(attempt-2))
+			delay := override
+			if delay < 0 {
+				delay = c.retryDelay * time.Duration(1<<uint(attempt-2))
+			}
+			override = -1
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -192,6 +236,11 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 		}
 		for k, v := range c.headers {
 			req.Header.Set(k, v)
+		}
+		// Apply the stashed JWT after the static headers (so it wins over a static
+		// Authorization) but before extraHeaders (so a per-request header still overrides).
+		if tok := c.getToken(); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 		for k, v := range extraHeaders {
 			req.Header.Set(k, v)
@@ -236,7 +285,17 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 			if code == "" && message == "" {
 				message = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			}
-			apiErr := &APIError{Status: resp.StatusCode, Code: code, Message: message, Reason: errBody.Reason}
+			apiErr := &APIError{
+				Status:     resp.StatusCode,
+				Code:       code,
+				Message:    message,
+				Reason:     errBody.Reason,
+				RetryAfter: parseRetryAfter(resp.Header),
+			}
+			// A 429 is retried only when opted in (RetryOn429) and the retry budget is
+			// not exhausted — sleeping for the server's Retry-After rather than the
+			// immediate backoff used for network errors.
+			willRetry := resp.StatusCode == http.StatusTooManyRequests && c.retryOn429 && attempt < maxAttempts
 			if c.logger != nil {
 				c.logger(LogEntry{
 					Method:       method,
@@ -247,7 +306,12 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 					ResponseBody: errBody,
 					Err:          apiErr,
 					Attempt:      attemptField(trackAttempts, attempt),
+					WillRetry:    willRetry,
 				})
+			}
+			if willRetry {
+				override = apiErr.RetryAfter
+				continue
 			}
 			return apiErr
 		}
@@ -282,6 +346,28 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 func attemptField(track bool, attempt int) int {
 	if track {
 		return attempt
+	}
+	return 0
+}
+
+// parseRetryAfter reads an HTTP Retry-After header into a delay. The header comes
+// in two RFC 7231 forms: a non-negative number of seconds, or an HTTP-date to wait
+// until. Returns 0 when the header is absent, unparseable, or already in the past.
+func parseRetryAfter(h http.Header) time.Duration {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
 	}
 	return 0
 }

@@ -16,15 +16,21 @@ go get github.com/rail0/go-sdk
 
 ## Quick start
 
+`/payments`, `/accounts`, and `/analytics` are SIWE-gated, so log in first. `Auth.Login`
+runs the full SIWE flow with a local private key and **stashes the JWT on the same
+client**, so every subsequent call is authenticated — no manual header wiring.
+
 ```go
-client := rail0.NewClient(rail0.ClientOptions{
-    BaseURL: "https://api.rail0.xyz",
-    Headers: map[string]string{"Authorization": "Bearer <jwt>"},
-})
+client := rail0.NewClient(rail0.ClientOptions{BaseURL: "https://api.rail0.xyz"})
 ctx := context.Background()
 
+// Authenticate (SIWE): this client is now authorized for the gated endpoints.
+key, _ := rail0.HexToPrivateKey("0x…")
+auth, _ := client.Auth.Login(ctx, key, "api.rail0.xyz")
+_ = auth.AccountID
+
 // Discover the merchant's wallets (each with its tokens nested) and pick one
-wallets, _ := client.Wallets.List(ctx, "account-uuid")
+wallets, _ := client.Wallets.List(ctx, auth.AccountID)
 w := wallets.Data[0]   // a wallet
 tk := w.Tokens[0].Token // one of its accepted tokens (token/chain)
 
@@ -39,6 +45,16 @@ resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 })
 ```
 
+Already hold a JWT? Seed it with the `Token` option (or `client.SetToken(jwt)` later),
+instead of running the SIWE flow:
+
+```go
+client := rail0.NewClient(rail0.ClientOptions{
+    BaseURL: "https://api.rail0.xyz",
+    Token:   "<jwt>", // sent as Authorization: Bearer <jwt> on every request
+})
+```
+
 ## Client services
 
 | Service | Description |
@@ -50,6 +66,7 @@ resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 | `client.Wallets` | Wallet management under `/accounts/:id/wallets` (JWT) |
 | `client.PaymentMethods` | Public discovery of a merchant's accepted wallets/tokens (`GET /payment_methods`, no JWT) |
 | `client.Payments` | Full payment lifecycle |
+| `client.Analytics` | Merchant sales analytics (JWT + account) |
 | `client.Webhooks` | Webhook subscription management (JWT) |
 
 ## Authentication (SIWE)
@@ -64,7 +81,8 @@ resp, _ := client.Auth.Verify(ctx, rail0.AuthRequest{
     Message:   siweMessage,
     Signature: "0x...",
 })
-// resp.Token — include as Authorization: Bearer <token>
+// Verify (and Login) stash resp.Token on this client automatically — the SAME
+// client is now authenticated for the gated endpoints.
 
 // Or do the whole flow with a raw private key:
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
@@ -72,6 +90,15 @@ resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
 // Login embeds SIWE chain id 1 by default. Pass an explicit chain id to match a
 // gateway whose SIWE_CHAIN_ID policy differs:
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz", 5042002)
+```
+
+The JWT lives on the shared transport, so all services see it at once. Set it three
+ways — the `Token` client option, `client.SetToken(jwt)` at any time (pass `""` to
+clear), or automatically via `Auth.Login` / `Auth.Verify`. A per-request header still
+overrides it.
+
+```go
+client.SetToken(resp.Token) // apply a token to an already-built client
 ```
 
 ## Catalog (public)
@@ -260,6 +287,45 @@ for _, d := range all.Data {
 }
 ```
 
+## Analytics (JWT + account)
+
+Merchant sales analytics, scoped to the authenticated **account**'s own wallets as
+payee — a merchant only ever sees its own sales. Every endpoint needs a JWT bound to
+a non-null account (401 without a token, 403 for an account-less buyer session).
+Reads are aggregates (counts / SUMs), not payment records.
+
+Amounts are token base-unit integer strings and are only summed **within** a single
+`(token, chain)` — different tokens are never added together, so per-token volume
+comes with its `Decimals` for display.
+
+```go
+// Headline KPIs: order/dispute counts, refund & dispute rates, by-status counts,
+// and per-(token, chain) gross/captured/refunded volume. All filters optional.
+sum, _ := client.Analytics.Summary(ctx, rail0.AnalyticsFilters{
+    Mode: "charge", From: "2026-01-01T00:00:00Z", To: "2026-02-01T00:00:00Z",
+})
+fmt.Println(sum.Orders, sum.RefundRate, sum.ByStatus["captured"])
+for _, v := range sum.Volume {
+    fmt.Println(v.Symbol, v.Gross, v.Captured) // format v.Gross with *v.Decimals
+}
+
+// Order count per time bucket (oldest first). Per-bucket Volume is non-nil only
+// when BOTH Token and ChainID are set (a single token is summable). Interval is
+// "day" (default), "week", or "month".
+buckets, _ := client.Analytics.Timeseries(ctx, rail0.TimeseriesParams{
+    AnalyticsFilters: rail0.AnalyticsFilters{Token: "0x…", ChainID: 8453},
+    Interval:         "week",
+})
+
+// Aggregate orders by a dimension (By is required): "token" | "chain" | "mode" |
+// "status". token/chain rows carry Token/ChainID/Decimals/Volume; mode/status rows
+// are counts only (those fields are nil). Row.Key is the dimension value.
+rows, _ := client.Analytics.Breakdown(ctx, rail0.BreakdownParams{By: "token"})
+for _, r := range rows {
+    fmt.Println(r.Key, r.Orders) // r.Key is a string (or an int chain id fallback)
+}
+```
+
 ## Signing
 
 The SDK signs locally — the gateway never holds a private key. Two kinds of
@@ -354,13 +420,19 @@ List endpoints accept a `Sort` field using JSON:API convention:
 ```go
 client := rail0.NewClient(rail0.ClientOptions{
     BaseURL:    "https://api.rail0.xyz",
-    Headers:    map[string]string{"Authorization": "Bearer " + token},
+    Token:      token, // Authorization: Bearer <token> (or use Headers / SetToken)
     Timeout:    30 * time.Second,
     MaxRetries: 3,
     RetryDelay: 200 * time.Millisecond,
+    RetryOn429: true, // retry 429s, sleeping for Retry-After (uses the MaxRetries budget)
     Logger:     rail0.DebugLogger,
 })
 ```
+
+Network errors and timeouts are retried up to `MaxRetries` with exponential backoff.
+HTTP errors are **not** retried by default; opt in to rate-limit retries with
+`RetryOn429`, which draws on the same `MaxRetries` budget and waits for the server's
+`Retry-After` (falling back to the backoff when the header is absent).
 
 ## Error handling
 
@@ -371,6 +443,9 @@ if err != nil {
     if errors.As(err, &apiErr) {
         fmt.Println(apiErr.Status, apiErr.Code, apiErr.Message)
         fmt.Println(apiErr.Hint()) // actionable next step for known codes, "" otherwise
+        if apiErr.Status == 429 {
+            time.Sleep(apiErr.RetryAfter) // parsed from the Retry-After header (0 if absent)
+        }
     }
 }
 ```
@@ -395,7 +470,7 @@ go build ./...
 > ```
 >
 > The client method files (`auth.go`, `payments.go`, `wallets.go`,
-> `payment_methods.go`, `webhooks.go`, `health.go`, `chains.go`, `tokens.go`),
+> `payment_methods.go`, `webhooks.go`, `analytics.go`, `health.go`, `chains.go`, `tokens.go`),
 > the signing helpers (`signing.go`, `transaction.go`), and the stablecoin
 > registry (`stablecoins.go`) are hand-maintained and never overwritten by the
 > generator.

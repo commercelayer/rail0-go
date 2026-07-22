@@ -25,8 +25,15 @@ import (
 
 func main() {
 	ctx := context.Background()
+	// /payments is SIWE-gated, so authenticate before creating a payment. Either seed
+	// a JWT you already hold (below) or run the full SIWE flow with a private key —
+	// client.Auth.Login stashes the token on this same client automatically:
+	//
+	//	key, _ := rail0.HexToPrivateKey("0x…")
+	//	if _, err := client.Auth.Login(ctx, key, "api.rail0.xyz"); err != nil { log.Fatal(err) }
 	client := rail0.NewClient(rail0.ClientOptions{
 		BaseURL: "https://api.rail0.xyz",
+		Token:   "<jwt>", // Authorization: Bearer <jwt>
 	})
 
 	// ----------------------------------------------------------------
