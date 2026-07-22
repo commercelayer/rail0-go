@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# bin/test — Run the rail0-go SDK test suite (go test).
+#
+#   bin/test               # whole module
+#   bin/test ./test/...    # a single package
+#   bin/test -run TestFoo  # filter by test name
+#
+# Pure unit tests — no database or running services needed. The race detector is
+# on by default (the suite is race-clean); pass -race=false to disable. Go has no
+# separate "test env" runtime flag — `go test` compiles and runs the *_test.go
+# files directly. Extra args pass through to `go test`.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+command -v go >/dev/null 2>&1 || { echo "❌  go not found"; exit 1; }
+
+echo "🧪  Running tests (go test)…"
+if [[ $# -eq 0 ]]; then
+  exec go test -race ./...
+fi
+exec go test -race "$@"
