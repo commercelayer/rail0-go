@@ -13,7 +13,12 @@ import (
 
 func main() {
 	ctx := context.Background()
-	client := rail0.NewClient(rail0.ClientOptions{BaseURL: "https://api.rail0.xyz"})
+	// /payments is SIWE-gated — authenticate first. Seed a JWT you hold (below), or run
+	// client.Auth.Login(ctx, key, "api.rail0.xyz"), which stashes the token on this client.
+	client := rail0.NewClient(rail0.ClientOptions{
+		BaseURL: "https://api.rail0.xyz",
+		Token:   "<jwt>", // Authorization: Bearer <jwt>
+	})
 
 	paymentID := "0x..." // a captured payment
 

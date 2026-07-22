@@ -8,6 +8,9 @@ package rail0
 
 // Client is the entry point for the RAIL0 SDK.
 type Client struct {
+	// http is the shared transport every service uses; held here so SetToken can
+	// stash a JWT that then applies to all services at once.
+	http *httpClient
 	// Wallets exposes account wallet management under /accounts/:id/wallets (JWT).
 	Wallets *WalletsService
 	// PaymentMethods exposes the public GET /payment_methods discovery (no JWT).
@@ -24,6 +27,8 @@ type Client struct {
 	Disputes *DisputesService
 	// Webhooks exposes webhook subscription management (JWT).
 	Webhooks *WebhooksService
+	// Analytics exposes the account-scoped merchant sales analytics (JWT + account).
+	Analytics *AnalyticsService
 	// Health exposes the gateway liveness/readiness check.
 	Health *HealthService
 }
@@ -32,6 +37,7 @@ type Client struct {
 func NewClient(opts ClientOptions) *Client {
 	h := newHTTPClient(opts)
 	return &Client{
+		http:           h,
 		Wallets:        &WalletsService{http: h},
 		PaymentMethods: &PaymentMethodsService{http: h},
 		Auth:           &AuthService{http: h},
@@ -40,6 +46,14 @@ func NewClient(opts ClientOptions) *Client {
 		Payments:       &PaymentsService{http: h},
 		Disputes:       &DisputesService{http: h},
 		Webhooks:       &WebhooksService{http: h},
+		Analytics:      &AnalyticsService{http: h},
 		Health:         &HealthService{http: h},
 	}
 }
+
+// SetToken stashes a JWT on the shared transport so every service sends
+// "Authorization: Bearer <token>" on subsequent requests. Use it to authenticate a
+// client built without a Token option — e.g. with the token returned by Auth.Verify
+// (Auth.Login/Verify also do this for you). Pass "" to clear it. Safe to call
+// concurrently with in-flight requests.
+func (c *Client) SetToken(token string) { c.http.SetToken(token) }

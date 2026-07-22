@@ -45,11 +45,18 @@ func (s *AuthService) GetNonce(ctx context.Context) (*NonceResponse, error) {
 	return &out, nil
 }
 
-// Verify submits a signed SIWE message and returns a JWT on success.
+// Verify submits a signed SIWE message and returns a JWT on success. The returned
+// token is also stashed on the shared transport, so the SAME client is immediately
+// authenticated for the gated endpoints — no manual SetToken needed (equivalent to
+// calling Client.SetToken(resp.Token)). Login funnels through here, so it authenticates
+// the client too.
 func (s *AuthService) Verify(ctx context.Context, req AuthRequest) (*AuthResponse, error) {
 	var out AuthResponse
 	if err := s.http.post(ctx, "/auth", req, &out); err != nil {
 		return nil, err
+	}
+	if out.Token != "" {
+		s.http.SetToken(out.Token)
 	}
 	return &out, nil
 }

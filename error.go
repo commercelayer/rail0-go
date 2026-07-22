@@ -1,6 +1,9 @@
 package rail0
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // APIError is returned when the RAIL0 API responds with a non-2xx status code.
 type APIError struct {
@@ -13,6 +16,10 @@ type APIError struct {
 	// Reason is an optional sub-cause the gateway attaches to some errors
 	// (e.g. "rpc_unreachable" on a 502 signing_payload_unavailable); "" if absent.
 	Reason string
+	// RetryAfter is how long to wait before retrying, parsed from the response's
+	// Retry-After header. Set on a 429 (rate limited) — 0 when the header is absent
+	// or unparseable. The client retries automatically only when RetryOn429 is set.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
