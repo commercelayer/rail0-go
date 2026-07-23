@@ -65,14 +65,18 @@ var errorHints = map[string]string{
 	"transaction_not_overwritable": "a transaction for this operation is already in flight — wait for it to settle",
 	"signer_mismatch":              "the signing key doesn't match the payment's payer/payee",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
-	"not_payee":                 "only the merchant (payee) may do this",
-	"not_payer":                 "only the buyer (payer) may do this",
-	"not_payer_or_payee":        "only the payer or the payee may do this",
-	"refund_expired":            "the refund window has closed (refundExpiry passed) — refund/dispute is no longer possible",
-	"authorization_not_expired": "release opens only after authorizationExpiry — wait until it passes",
-	"already_captured":          "already (partially) captured — use release for the remainder, not void",
-	"token_not_accepted":        "the token isn't in this deployment's allowlist",
-	"payment_already_exists":    "a payment with this id already exists on-chain",
+	"not_payee":                  "only the merchant (payee) may do this",
+	"not_payer":                  "only the buyer (payer) may do this",
+	"not_payer_or_payee":         "only the payer or the payee may do this",
+	"refund_expired":             "the refund window has closed (refundExpiry passed) — refund/dispute is no longer possible",
+	"authorization_not_expired":  "release opens only after authorizationExpiry — wait until it passes",
+	"already_captured":           "already (partially) captured — use release for the remainder, not void",
+	"unsupported_payment_method": "the payee (merchant) doesn't accept this token/chain — check the merchant's payment methods",
+	"unknown_token":              "the token isn't configured on this chain",
+	"no_active_contract":         "no active RAIL0 contract on that chain",
+	"missing_param":              "a required parameter is missing from the request",
+	"forbidden":                  "not permitted for this session — on create the payer must be the signed-in address",
+	"payment_already_exists":     "a payment with this id already exists on-chain",
 }
 
 // firstNonEmpty returns the first argument that isn't the empty string, or "".
