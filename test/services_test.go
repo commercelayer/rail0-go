@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	rail0 "github.com/rail0/go-sdk"
@@ -206,7 +207,7 @@ func TestWallets_Create(t *testing.T) {
 	client := newMockClient(t, mt)
 
 	res, err := client.Wallets.Create(context.Background(), "acc_1", rail0.CreateWalletRequest{
-		Address: "0xabc", Label: "Treasury",
+		Address: "0xabc", Message: "siwe-msg", Signature: "0xproof", Label: "Treasury",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,8 +216,56 @@ func TestWallets_Create(t *testing.T) {
 	if req.Method != http.MethodPost || req.URL.Path != "/accounts/acc_1/wallets" {
 		t.Errorf("got %s %s", req.Method, req.URL.Path)
 	}
+	// The SIWE proof-of-ownership (message + signature) must be sent in the body.
+	var body struct {
+		Address   string `json:"address"`
+		Message   string `json:"message"`
+		Signature string `json:"signature"`
+	}
+	raw, _ := io.ReadAll(req.Body)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Address != "0xabc" || body.Message != "siwe-msg" || body.Signature != "0xproof" {
+		t.Errorf("create body missing proof-of-ownership: %+v", body)
+	}
 	if res.ID != "w_1" || res.Address != "0xabc" {
 		t.Errorf("unexpected wallet: %+v", res)
+	}
+}
+
+func TestProveAddress_SignsNonceWithoutAuthenticating(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(201, map[string]any{
+		"nonce": "walletNonce9", "expires_at": "2099-01-01T00:00:00Z",
+	}))
+	client := newMockClient(t, mt)
+
+	key, err := rail0.HexToPrivateKey("0x1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("HexToPrivateKey: %v", err)
+	}
+
+	proof, err := client.Auth.ProveAddress(context.Background(), key, "localhost")
+	if err != nil {
+		t.Fatalf("ProveAddress: %v", err)
+	}
+
+	// Only the nonce endpoint is hit — ProveAddress must NOT POST /auth (it does
+	// not authenticate the client; the wallet add is authorized by the caller's
+	// own session, which may be a different address).
+	if len(mt.recorded) != 1 || mt.recorded[0].URL.Path != "/auth/nonces" {
+		t.Fatalf("expected exactly one POST /auth/nonces, got %d requests", len(mt.recorded))
+	}
+	if proof.Message == "" || proof.Signature == "" {
+		t.Errorf("proof must carry message + signature, got %+v", proof)
+	}
+	// The signed message embeds the fetched nonce and the default login chain id.
+	if !strings.Contains(proof.Message, "walletNonce9") {
+		t.Errorf("proof message must embed the fetched nonce, got:\n%s", proof.Message)
+	}
+	if !strings.Contains(proof.Message, "Chain ID: 1") {
+		t.Errorf("proof message must embed default Chain ID: 1, got:\n%s", proof.Message)
 	}
 }
 

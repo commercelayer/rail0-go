@@ -73,36 +73,90 @@ func (s *AuthService) Verify(ctx context.Context, req AuthRequest) (*AuthRespons
 // and must match the gateway's SIWE_CHAIN_ID policy — override only when the
 // gateway is configured with a different login chain.
 func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain string, chainID ...int) (*AuthResponse, error) {
-	loginChain := 1
-	if len(chainID) > 0 && chainID[0] != 0 {
-		loginChain = chainID[0]
-	}
-
 	nonceResp, err := s.GetNonce(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("rail0: get nonce: %w", err)
 	}
 
-	address, err := privateKeyToEthAddress(privateKey)
+	message, sig, err := signSIWE(privateKey, domain, nonceResp.Nonce, loginChainID(chainID...))
 	if err != nil {
-		return nil, fmt.Errorf("rail0: derive address: %w", err)
+		return nil, err
 	}
 
-	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonceResp.Nonce, map[string]interface{}{
-		"chainId":   loginChain,
+	return s.Verify(ctx, AuthRequest{Message: message, Signature: sig})
+}
+
+// WalletProof is a SIWE proof-of-ownership of an address: the signed EIP-4361
+// message plus its signature. It is produced by ProveAddress and submitted to
+// WalletsService.Create to register a wallet (the gateway verifies the signature
+// recovers to the wallet's address).
+type WalletProof struct {
+	Message   string
+	Signature string
+}
+
+// ProveAddress runs the SIWE proof-of-ownership handshake for the address
+// controlled by privateKey and returns the {message, signature} to hand to
+// WalletsService.Create. It is the exact same handshake as Login — fetch a
+// single-use nonce, build the identical EIP-4361 message, sign it with
+// EIP-191 personal_sign — but stops short of POST /auth: it does NOT authenticate
+// the client, because adding a wallet proves control of the ADDED address while
+// the request itself is authorized by the caller's existing session (the two
+// addresses may differ, e.g. a merchant registering several payee wallets).
+//
+// privateKey must be the 32-byte key OF the address being added. domain/chainID
+// carry the same meaning and defaults as Login (the gateway host and, default 1,
+// the nominal login chain) and must satisfy the gateway's SIWE policy.
+func (s *AuthService) ProveAddress(ctx context.Context, privateKey []byte, domain string, chainID ...int) (*WalletProof, error) {
+	nonceResp, err := s.GetNonce(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("rail0: get nonce: %w", err)
+	}
+
+	message, sig, err := signSIWE(privateKey, domain, nonceResp.Nonce, loginChainID(chainID...))
+	if err != nil {
+		return nil, err
+	}
+
+	return &WalletProof{Message: message, Signature: sig}, nil
+}
+
+// loginChainID resolves the optional variadic chain id to a concrete value,
+// defaulting to 1 (the gateway's default SIWE login chain) when omitted or zero.
+func loginChainID(chainID ...int) int {
+	if len(chainID) > 0 && chainID[0] != 0 {
+		return chainID[0]
+	}
+	return 1
+}
+
+// signSIWE builds an EIP-4361 message for the address controlled by privateKey
+// (domain, uri "https://"+domain, the given single-use nonce, the given chainId,
+// statement "Sign in to RAIL0") and signs it with EIP-191 personal_sign. It is
+// the shared core of the SIWE handshake: Login uses it to prove the session
+// address, ProveAddress to prove a wallet being added — so both produce a byte-
+// identical message shape and the gateway verifies them the same way. Returns
+// the message text and its 0x-prefixed signature.
+func signSIWE(privateKey []byte, domain, nonce string, chainID int) (message, signature string, err error) {
+	address, err := privateKeyToEthAddress(privateKey)
+	if err != nil {
+		return "", "", fmt.Errorf("rail0: derive address: %w", err)
+	}
+
+	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonce, map[string]interface{}{
+		"chainId":   chainID,
 		"statement": "Sign in to RAIL0",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("rail0: build SIWE message: %w", err)
+		return "", "", fmt.Errorf("rail0: build SIWE message: %w", err)
 	}
-	messageStr := msg.String()
+	message = msg.String()
 
-	sig, err := personalSign(privateKey, messageStr)
+	signature, err = personalSign(privateKey, message)
 	if err != nil {
-		return nil, fmt.Errorf("rail0: sign: %w", err)
+		return "", "", fmt.Errorf("rail0: sign: %w", err)
 	}
-
-	return s.Verify(ctx, AuthRequest{Message: messageStr, Signature: sig})
+	return message, signature, nil
 }
 
 // privateKeyToEthAddress derives the EIP-55 checksummed Ethereum address.
