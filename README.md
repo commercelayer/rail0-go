@@ -90,6 +90,12 @@ resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
 // Login embeds SIWE chain id 1 by default. Pass an explicit chain id to match a
 // gateway whose SIWE_CHAIN_ID policy differs:
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz", 5042002)
+
+// The same SIWE handshake, without logging in, produces a proof-of-ownership of
+// an address for Wallets.Create (see "Wallets" below). ProveAddress fetches a
+// nonce and signs the identical message with the given key, but does NOT touch
+// the client's token:
+proof, _ := client.Auth.ProveAddress(ctx, walletKeyBytes, "api.rail0.xyz")
 ```
 
 The JWT lives on the shared transport, so all services see it at once. Set it three
@@ -140,10 +146,17 @@ wallets, _ := client.Wallets.List(ctx, accountID, rail0.ListWalletsParams{
 // Get a single wallet by id or 0x address (address is unique per account)
 w, _ := client.Wallets.Get(ctx, accountID, "0xABC…")
 
-// Create a wallet
+// Create a wallet — requires a SIWE proof-of-ownership of the address being
+// added. Build it with Auth.ProveAddress using the KEY OF THAT ADDRESS (the same
+// SIWE handshake as login; it fetches a nonce and signs, but does NOT log the
+// client in). The added address need not equal the session address — a merchant
+// may register several payee wallets — but you must hold each added address's key.
+proof, _ := client.Auth.ProveAddress(ctx, walletKeyBytes, "api.rail0.xyz")
 w, _ := client.Wallets.Create(ctx, accountID, rail0.CreateWalletRequest{
-    Address: "0xABC...",
-    Label:   "Treasury",
+    Address:   "0xABC...",
+    Message:   proof.Message,
+    Signature: proof.Signature,
+    Label:     "Treasury",
 })
 
 // Update a wallet (label / active)

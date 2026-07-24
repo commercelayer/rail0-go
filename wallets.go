@@ -88,13 +88,23 @@ func (s *WalletsService) Get(ctx context.Context, accountID, idOrAddress string)
 }
 
 // CreateWalletRequest is the body for WalletsService.Create.
+//
+// Adding a wallet now requires a SIWE proof-of-ownership of Address: Message is
+// an EIP-4361 message carrying a fresh nonce (POST /auth/nonces) signed by the
+// address's own key, and Signature is that signature. Build the pair with
+// AuthService.ProveAddress (the same handshake as login), which the CLI does for
+// you. The gateway rejects the request (422) if Signature does not recover to
+// Address. Address/Message/Signature are required; Label is optional.
 type CreateWalletRequest struct {
-	Address string `json:"address"`
-	Label   string `json:"label,omitempty"`
+	Address   string `json:"address"`
+	Message   string `json:"message"`
+	Signature string `json:"signature"`
+	Label     string `json:"label,omitempty"`
 }
 
-// Create adds a new wallet to the account (requires JWT). Returns the plain
-// Wallet record (not a wallet-token row).
+// Create adds a new wallet to the account (requires JWT). The request must carry
+// a SIWE proof-of-ownership of Address (see CreateWalletRequest / ProveAddress).
+// Returns the plain Wallet record (not a wallet-token row).
 func (s *WalletsService) Create(ctx context.Context, accountID string, req CreateWalletRequest) (*Wallet, error) {
 	var out Wallet
 	if err := s.http.post(ctx, fmt.Sprintf("/accounts/%s/wallets", accountID), req, &out); err != nil {
