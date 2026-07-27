@@ -18,9 +18,16 @@ type TokensService struct {
 type ListTokensParams struct {
 	ChainID int    // filter by chain id; 0 = no filter
 	Symbol  string // filter by token symbol (case-insensitive, e.g. "USDC")
+	// Active filters on the token's active flag. nil (the zero value) applies NO
+	// filter and returns every token, including retired ones — a payment keeps
+	// its token address forever, so resolving a historical payment needs them.
+	// Set it to true on a path that must only offer what can still be transacted.
+	Active *bool
 }
 
-// List returns active tokens, optionally filtered by chain and/or symbol.
+// List returns the token catalog, optionally filtered by chain, symbol and/or
+// active flag. Unfiltered it includes RETIRED tokens (Token.Active reports
+// which); pass Active=true for only those usable for a new payment.
 func (s *TokensService) List(ctx context.Context, params ...ListTokensParams) ([]Token, error) {
 	path := "/tokens"
 	if len(params) > 0 {
@@ -31,6 +38,9 @@ func (s *TokensService) List(ctx context.Context, params ...ListTokensParams) ([
 		}
 		if p.Symbol != "" {
 			q.Set("symbol", p.Symbol)
+		}
+		if p.Active != nil {
+			q.Set("active", strconv.FormatBool(*p.Active))
 		}
 		if len(q) > 0 {
 			path += "?" + q.Encode()
