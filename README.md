@@ -454,8 +454,10 @@ _, err := client.Payments.Authorize(ctx, rail0ID, params)
 if err != nil {
     var apiErr *rail0.APIError
     if errors.As(err, &apiErr) {
-        fmt.Println(apiErr.Status, apiErr.Code, apiErr.Message)
-        fmt.Println(apiErr.Hint()) // actionable next step for known codes, "" otherwise
+        fmt.Println(apiErr.Code)   // branch on this: "insufficient_token_balance"
+        fmt.Println(apiErr.Title)  // short label: "Not enough balance"
+        fmt.Println(apiErr.Detail) // a sentence you can show a user verbatim
+        fmt.Println(apiErr.Hint()) // this SDK's own extra advice, "" when it has none
         if apiErr.Status == 429 {
             time.Sleep(apiErr.RetryAfter) // parsed from the Retry-After header (0 if absent)
         }
@@ -463,9 +465,28 @@ if err != nil {
 }
 ```
 
-`apiErr.Hint()` (or `rail0.DescribeError(code)`) returns an actionable next step for
-known error codes — gateway state guards and contract reverts — e.g.
-`refund_expired` → _"the refund window has closed…"_; `""` for an unknown code.
+**`Code` is the only field to branch on.** `Title` and `Detail` come from the
+gateway's error catalogue, so the same condition always reads the same way whichever
+endpoint surfaced it; `Detail` is written to be shown to a user as-is. `Message` is
+`Detail` under its older name, kept so existing callers keep compiling.
+
+`apiErr.Hint()` (or `rail0.DescribeError(code)`) is this SDK's own local advice, a
+*supplement* to `Detail` rather than a replacement — present only for codes worth
+adding a next step to, `""` otherwise.
+
+The codes span four families, and the last two are the ones most requests actually
+hit — neither is raised by RAIL0 itself:
+
+| Family | Examples |
+| --- | --- |
+| Request & state guards | `not_capturable`, `amount_exceeds_refundable`, `not_the_payee` |
+| RAIL0 custom errors | `not_payee`, `already_captured`, `refund_expired` |
+| Token reverts | `insufficient_token_balance`, `invalid_token_signature`, `authorization_already_used` |
+| Broadcast rejections | `insufficient_gas_funds`, `nonce_too_low`, `replacement_underpriced` |
+
+A **failed transaction** carries the same triple as `ErrorCode`, `ErrorTitle` and
+`ErrorDetail`, whether it reverted on-chain or was refused before broadcast — so both
+render through one code path.
 
 ## Development
 
