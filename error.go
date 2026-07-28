@@ -6,12 +6,23 @@ import (
 )
 
 // APIError is returned when the RAIL0 API responds with a non-2xx status code.
+//
+// The gateway's error body carries a code/title/detail triple; this mirrors it.
+// Prefer Detail when showing a user what happened and Title for a heading: both come
+// from the gateway's error catalogue, so the same condition always reads the same way
+// — unlike Hint(), which is this SDK's own local advice for the codes it knows.
 type APIError struct {
 	// Status is the HTTP status code (e.g. 404, 409, 422).
 	Status int
-	// Code is the machine-readable error identifier, e.g. "PaymentNotFound".
+	// Code is the machine-readable error identifier and the only field to branch on,
+	// e.g. "amount_exceeds_refundable" or "insufficient_token_balance".
 	Code string
-	// Message is the human-readable description.
+	// Title is a short label for the failure, e.g. "Not enough balance".
+	Title string
+	// Detail is one or two sentences fit to show a user verbatim.
+	Detail string
+	// Message is Detail under its pre-code/title/detail name; kept so existing
+	// callers keep compiling. Read Detail in new code.
 	Message string
 	// Reason is an optional sub-cause the gateway attaches to some errors
 	// (e.g. "rpc_unreachable" on a 502 signing_payload_unavailable); "" if absent.
@@ -23,15 +34,21 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	if e.Code == "" {
-		return fmt.Sprintf("rail0 error (HTTP %d): %s", e.Status, e.Message)
+	text := e.Detail
+	if text == "" {
+		text = e.Message
 	}
-	return fmt.Sprintf("rail0 %s (HTTP %d): %s", e.Code, e.Status, e.Message)
+	if e.Code == "" {
+		return fmt.Sprintf("rail0 error (HTTP %d): %s", e.Status, text)
+	}
+	return fmt.Sprintf("rail0 %s (HTTP %d): %s", e.Code, e.Status, text)
 }
 
-// Hint returns an actionable next-step hint for this error, or "" when the cause
-// isn't a recognised code. It checks Code first, then the Reason sub-cause (which
-// carries the specific error for a contract_revert).
+// Hint returns this SDK's own actionable next step for the error, or "" when the code
+// isn't one it knows. It is a SUPPLEMENT to Detail, not a replacement: Detail is the
+// gateway's own sentence and is always present, while a hint exists only for codes
+// worth adding client-side advice to. It checks Code first, then the Reason sub-cause
+// (which carries the specific error for a contract_revert).
 func (e *APIError) Hint() string {
 	if h := errorHints[e.Code]; h != "" {
 		return h
@@ -64,6 +81,27 @@ var errorHints = map[string]string{
 	"nothing_to_dispute":           "a dispute needs a merchant-held (refundable) balance",
 	"transaction_not_overwritable": "a transaction for this operation is already in flight — wait for it to settle",
 	"signer_mismatch":              "the signing key doesn't match the payment's payer/payee",
+	"config_hash_mismatch":         "the payment record and its on-chain deployment disagree — the payment cannot be operated as recorded",
+	"payment_not_on_chain":         "the contract has no record of this payment — its opening transaction may never have confirmed",
+	"unsupported_contract_version": "the payment's RAIL0 deployment is newer or older than this gateway supports — upgrade the gateway",
+	// token-level reverts: raised by the ERC-20 / EIP-3009 token, not by RAIL0
+	"insufficient_token_balance":   "the paying wallet does not hold enough of the token — top it up and retry",
+	"invalid_token_signature":      "the EIP-3009 authorization did not recover to the paying wallet — wrong key, chain, token or amount",
+	"authorization_already_used":   "that EIP-3009 authorization was already spent or cancelled — each is single-use, create a fresh payment",
+	"authorization_not_yet_valid":  "the authorization's validAfter is still in the future",
+	"token_account_blocked":        "the token issuer has blocklisted one of the wallets in this transfer",
+	"token_paused":                 "the token contract is paused by its issuer — no transfer can settle right now",
+	// broadcast rejections: the node refused the transaction, it never reached the chain
+	"insufficient_gas_funds":       "the sending wallet cannot cover gas — fund it with the chain's native token",
+	"nonce_too_low":                "a transaction with that nonce is already on-chain — re-prepare the operation",
+	"replacement_underpriced":      "another transaction with that nonce is pending and this one does not pay enough to replace it",
+	"gas_price_too_low":            "the fee is below what the node accepts — re-prepare to pick up current fees",
+	"already_known":                "the node already has this exact transaction — wait for it to confirm rather than resending",
+	"rpc_unavailable":              "no configured RPC endpoint answered — the transaction was not submitted",
+	// authorization: which party the session is missing
+	"not_the_payee":                "only the payment's payee can do this — sign in with the merchant's wallet",
+	"not_the_payer":                "only the payment's payer can do this — sign in with the buyer's wallet",
+	"not_a_participant":            "only the payer and the payee can see or act on a payment",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
 	"not_payee":                  "only the merchant (payee) may do this",
 	"not_payer":                  "only the buyer (payer) may do this",

@@ -57,14 +57,20 @@ type DisputeDetail struct {
 }
 
 // APIErrorBody is the JSON shape of error responses from the RAIL0 API.
-// Used internally by the HTTP client to parse non-2xx responses. The gateway
-// puts the machine-readable identifier in `status` (occasionally `code`) and the
-// human text in `message`; Grape validation errors put the text in `error`. All
-// four are parsed so a useful code/message can always be surfaced.
+// Used internally by the HTTP client to parse non-2xx responses.
+//
+// The gateway sends a code/title/detail triple: `code` is the specific condition,
+// `title` a short label, `detail` a sentence fit to show a user. `status` and
+// `message` are the same values under their older names — `status` carries the wider
+// family (e.g. `forbidden`) where `code` is narrower, `message` equals `detail` — and
+// Grape validation errors put their text in `error`. All of them are parsed so a
+// useful code and text can be surfaced whatever the gateway's age.
 type APIErrorBody struct {
-	Status  string `json:"status"`
 	Code    string `json:"code"`
-	Error   string `json:"error"`
+	Title   string `json:"title"`
+	Detail  string `json:"detail"`
+	Status  string `json:"status"`
 	Message string `json:"message"`
+	Error   string `json:"error"`
 	Reason  string `json:"reason"`
 }

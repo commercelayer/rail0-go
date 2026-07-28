@@ -277,18 +277,22 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			var errBody APIErrorBody
 			_ = json.Unmarshal(raw, &errBody)
-			// Prefer the gateway's identifier (`status`, else `code`) and its text
-			// (`message`, else Grape's `error`); fall back to the bare HTTP status
-			// only when the body carries neither — never clobber a real message.
-			code := firstNonEmpty(errBody.Status, errBody.Code)
-			message := firstNonEmpty(errBody.Message, errBody.Error)
-			if code == "" && message == "" {
-				message = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			// `code` is the specific condition and is what a caller branches on;
+			// `status` is the wider family the gateway still sends for compatibility,
+			// so it is only a fallback here. Likewise `detail` over `message` (its
+			// legacy alias) and Grape's `error`. The bare HTTP status is used only
+			// when the body carries no text at all — never clobbering a real message.
+			code := firstNonEmpty(errBody.Code, errBody.Status)
+			detail := firstNonEmpty(errBody.Detail, errBody.Message, errBody.Error)
+			if code == "" && detail == "" {
+				detail = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			}
 			apiErr := &APIError{
 				Status:     resp.StatusCode,
 				Code:       code,
-				Message:    message,
+				Title:      errBody.Title,
+				Detail:     detail,
+				Message:    detail,
 				Reason:     errBody.Reason,
 				RetryAfter: parseRetryAfter(resp.Header),
 			}
