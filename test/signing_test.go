@@ -22,6 +22,11 @@ const (
 	tokenAddress    = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 	contractAddress = "0x1234567890123456789012345678901234567890"
 	testNonce       = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	// A second key/address pair, so a refund test can sign as the PAYEE and assert
+	// which address the signature recovers to (the payer key cannot prove that).
+	payeePrivateKeyHex = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+	payeeAddress       = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 )
 
 var testDomain = rail0.TokenDomain{
@@ -82,15 +87,29 @@ func encB32(h string) []byte {
 // recomputeDigest independently replicates the EIP-712 digest so tests can
 // cross-check the implementation without calling its internal functions.
 func recomputeDigest(domain rail0.TokenDomain, from, to string, value, validAfter, validBefore *big.Int, nonce string) []byte {
+	return recomputeDigestWithType(
+		"TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)",
+		domain, from, to, value, validAfter, validBefore, nonce)
+}
+
+// recomputeReceiveDigest is recomputeDigest for the ReceiveWithAuthorization
+// typehash — the one a refund authorization is signed under.
+func recomputeReceiveDigest(domain rail0.TokenDomain, from, to string, value, validAfter, validBefore *big.Int, nonce string) []byte {
+	return recomputeDigestWithType(
+		"ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)",
+		domain, from, to, value, validAfter, validBefore, nonce)
+}
+
+func recomputeDigestWithType(typeStr string, domain rail0.TokenDomain, from, to string, value, validAfter, validBefore *big.Int, nonce string) []byte {
 	domainTypehash := testKeccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
-	transferTypehash := testKeccak256([]byte("TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"))
+	structTypehash := testKeccak256([]byte(typeStr))
 
 	nameHash := testKeccak256([]byte(domain.Name))
 	versionHash := testKeccak256([]byte(domain.Version))
 	chainID := new(big.Int).SetUint64(domain.ChainID)
 
 	ds := testKeccak256(concatBytes(domainTypehash, nameHash, versionHash, encUint(chainID), encAddr(domain.VerifyingContract)))
-	sh := testKeccak256(concatBytes(transferTypehash, encAddr(from), encAddr(to), encUint(value), encUint(validAfter), encUint(validBefore), encB32(nonce)))
+	sh := testKeccak256(concatBytes(structTypehash, encAddr(from), encAddr(to), encUint(value), encUint(validAfter), encUint(validBefore), encB32(nonce)))
 	return testKeccak256(concatBytes([]byte{0x19, 0x01}, ds, sh))
 }
 
@@ -244,7 +263,6 @@ func TestSignAuthorize_ReturnsValidSignature(t *testing.T) {
 	sig, err := rail0.SignAuthorize(rail0.SignPaymentParams{
 		PrivateKey:      key,
 		Payment:         testPayment,
-		Amount:          big.NewInt(50_000_000),
 		Nonce:           testNonce,
 		ContractAddress: contractAddress,
 		TokenDomain:     testDomain,
@@ -263,7 +281,7 @@ func TestSignAuthorize_MatchesSignTransferWithExplicitParams(t *testing.T) {
 	manual, _ := rail0.SignTransferWithAuthorization(key, testDomain, rail0.SignTransferParams{
 		From:        testPayment.Payer,
 		To:          contractAddress,
-		Value:       big.NewInt(50_000_000),
+		Value:       big.NewInt(100_000_000), // testPayment.Amount — the only value the contract signs
 		ValidAfter:  new(big.Int),
 		ValidBefore: big.NewInt(testPayment.AuthorizationExpiry),
 		Nonce:       testNonce,
@@ -271,7 +289,6 @@ func TestSignAuthorize_MatchesSignTransferWithExplicitParams(t *testing.T) {
 	auto, _ := rail0.SignAuthorize(rail0.SignPaymentParams{
 		PrivateKey:      key,
 		Payment:         testPayment,
-		Amount:          big.NewInt(50_000_000),
 		Nonce:           testNonce,
 		ContractAddress: contractAddress,
 		TokenDomain:     testDomain,
@@ -279,6 +296,77 @@ func TestSignAuthorize_MatchesSignTransferWithExplicitParams(t *testing.T) {
 
 	if manual != auto {
 		t.Errorf("SignAuthorize should match SignTransferWithAuthorization with explicit params\nmanual=%+v\nauto=%+v", manual, auto)
+	}
+}
+
+// The value is taken from Payment.Amount, so passing the same number explicitly
+// changes nothing — Amount is a cross-check, not an input.
+func TestSignAuthorize_ExplicitMatchingAmountIsANoOp(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	params := rail0.SignPaymentParams{
+		PrivateKey:      key,
+		Payment:         testPayment,
+		Nonce:           testNonce,
+		ContractAddress: contractAddress,
+		TokenDomain:     testDomain,
+	}
+	derived, err := rail0.SignAuthorize(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	params.Amount = big.NewInt(100_000_000) // == testPayment.Amount
+	explicit, err := rail0.SignAuthorize(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived != explicit {
+		t.Error("an Amount equal to Payment.Amount must produce the same signature")
+	}
+}
+
+// A disagreeing Amount is a caller bug that would otherwise surface as a 422
+// signer_mismatch (or a reverted transaction), so it must fail locally.
+func TestSignAuthorize_RejectsAmountDisagreeingWithPayment(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	if _, err := rail0.SignAuthorize(rail0.SignPaymentParams{
+		PrivateKey:      key,
+		Payment:         testPayment, // Amount "100000000"
+		Amount:          big.NewInt(50_000_000),
+		Nonce:           testNonce,
+		ContractAddress: contractAddress,
+		TokenDomain:     testDomain,
+	}); err == nil {
+		t.Error("expected an error when Amount disagrees with Payment.Amount")
+	}
+
+	if _, err := rail0.SignCharge(rail0.SignPaymentParams{
+		PrivateKey:      key,
+		Payment:         testPayment,
+		Amount:          big.NewInt(50_000_000),
+		Nonce:           testNonce,
+		ContractAddress: contractAddress,
+		TokenDomain:     testDomain,
+	}); err == nil {
+		t.Error("SignCharge: expected an error when Amount disagrees with Payment.Amount")
+	}
+}
+
+func TestSignAuthorize_RejectsUnparseablePaymentAmount(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	bad := testPayment
+	bad.Amount = "10.50" // a human decimal, not the base-unit integer the digest needs
+	if _, err := rail0.SignAuthorize(rail0.SignPaymentParams{
+		PrivateKey:      key,
+		Payment:         bad,
+		Nonce:           testNonce,
+		ContractAddress: contractAddress,
+		TokenDomain:     testDomain,
+	}); err == nil {
+		t.Error("expected an error for a non-integer Payment.Amount")
 	}
 }
 
@@ -292,7 +380,6 @@ func TestSignCharge_ReturnsValidSignature(t *testing.T) {
 	sig, err := rail0.SignCharge(rail0.SignPaymentParams{
 		PrivateKey:      key,
 		Payment:         testPayment,
-		Amount:          big.NewInt(25_000_000),
 		Nonce:           "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		ContractAddress: contractAddress,
 		TokenDomain:     testDomain,
@@ -311,7 +398,6 @@ func TestSignCharge_DifferentSignatureFromSignAuthorize(t *testing.T) {
 	authSig, _ := rail0.SignAuthorize(rail0.SignPaymentParams{
 		PrivateKey:      key,
 		Payment:         testPayment,
-		Amount:          big.NewInt(50_000_000),
 		Nonce:           testNonce,
 		ContractAddress: contractAddress,
 		TokenDomain:     testDomain,
@@ -319,7 +405,6 @@ func TestSignCharge_DifferentSignatureFromSignAuthorize(t *testing.T) {
 	chargeSig, _ := rail0.SignCharge(rail0.SignPaymentParams{
 		PrivateKey:      key,
 		Payment:         testPayment,
-		Amount:          big.NewInt(50_000_000),
 		Nonce:           "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		ContractAddress: contractAddress,
 		TokenDomain:     testDomain,
@@ -327,5 +412,67 @@ func TestSignCharge_DifferentSignatureFromSignAuthorize(t *testing.T) {
 
 	if authSig.R == chargeSig.R {
 		t.Error("SignCharge with a different nonce must produce a different signature than SignAuthorize")
+	}
+}
+
+// ================================================================
+//  SignReceiveWithAuthorization (refund — signed by the PAYEE)
+// ================================================================
+
+// The refund authorization is signed by the payee and names the payee as `from`
+// (RAIL0 calls receiveWithAuthorization(p.payee, address(this), …)). Recovering the
+// signer over a digest built with from=payee is the only assertion that pins the
+// mapping: a from=payer digest still yields a well-formed VRS, it just recovers to
+// an address that isn't `from`, and the token reverts on-chain.
+func TestSignReceiveWithAuthorization_RecoversPayee(t *testing.T) {
+	payeeKey, err := rail0.HexToPrivateKey(payeePrivateKeyHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payment := testPayment
+	payment.Payee = payeeAddress // so recovery can be compared against a known key
+
+	value := big.NewInt(40_000_000) // a partial refund: not Payment.Amount
+	sig, err := rail0.SignReceiveWithAuthorization(rail0.SignPaymentParams{
+		PrivateKey:      payeeKey,
+		Payment:         payment,
+		Amount:          value,
+		Nonce:           testNonce,
+		ContractAddress: contractAddress,
+		TokenDomain:     testDomain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	digest := recomputeReceiveDigest(testDomain, payeeAddress, contractAddress,
+		value, new(big.Int), big.NewInt(payment.RefundExpiry), testNonce)
+	if recovered := recoverSigner(t, sig, digest); !strings.EqualFold(recovered, payeeAddress) {
+		t.Errorf("recovered address %s does not match payee %s — the digest must use from=payee", recovered, payeeAddress)
+	}
+
+	// And the payer must NOT be the `from`: the same signature over a payer-from
+	// digest recovers to something else, which is exactly the on-chain revert.
+	payerFrom := recomputeReceiveDigest(testDomain, payment.Payer, contractAddress,
+		value, new(big.Int), big.NewInt(payment.RefundExpiry), testNonce)
+	if recoverSigner(t, sig, payerFrom) == recoverSigner(t, sig, digest) {
+		t.Error("payer-from and payee-from digests must not recover to the same address")
+	}
+}
+
+// The refunded amount cannot be derived (a refund may be partial), so a missing
+// one is an error rather than a panic in the ABI encoding.
+func TestSignReceiveWithAuthorization_RequiresAmount(t *testing.T) {
+	payeeKey, _ := rail0.HexToPrivateKey(payeePrivateKeyHex)
+
+	if _, err := rail0.SignReceiveWithAuthorization(rail0.SignPaymentParams{
+		PrivateKey:      payeeKey,
+		Payment:         testPayment,
+		Nonce:           testNonce,
+		ContractAddress: contractAddress,
+		TokenDomain:     testDomain,
+	}); err == nil {
+		t.Error("expected an error when Amount is nil")
 	}
 }

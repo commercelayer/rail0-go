@@ -2,11 +2,16 @@ package rail0_test
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	rail0 "github.com/rail0/go-sdk"
 )
@@ -67,8 +72,9 @@ func TestVerify_PostsToAuth(t *testing.T) {
 func TestHealth_GetsHealth(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
-		"status": "ok", "api_version": "v1", "contract_version": "1.2.1",
+		"status": "degraded", "api_version": "v1", "contract_version": "1.2.1",
 		"db": "ok", "active_chains": 2, "active_contracts": 1,
+		"sidekiq":   map[string]any{"status": "degraded", "redis": "ok", "processes": 0, "enqueued": 12},
 		"timestamp": "2026-01-01T00:00:00Z",
 	}))
 	client := newMockClient(t, mt)
@@ -80,8 +86,36 @@ func TestHealth_GetsHealth(t *testing.T) {
 	if mt.recorded[0].URL.Path != "/health" {
 		t.Errorf("path: got %s, want /health", mt.recorded[0].URL.Path)
 	}
-	if res.Status != "ok" || res.ActiveChains != 2 {
+	if res.Status != "degraded" || res.ActiveChains != 2 {
 		t.Errorf("unexpected health: %+v", res)
+	}
+	// The sidekiq section is the only thing that says WHY the status is degraded.
+	if res.Sidekiq == nil {
+		t.Fatal("sidekiq must be decoded when the gateway reports it")
+	}
+	if res.Sidekiq.Status != "degraded" || res.Sidekiq.Redis != "ok" || res.Sidekiq.Enqueued != 12 {
+		t.Errorf("unexpected sidekiq: %+v", res.Sidekiq)
+	}
+}
+
+// An anonymous caller gets liveness only: the session-gated detail is absent, and
+// Sidekiq stays nil rather than looking like a reported-but-empty fleet.
+func TestHealth_AnonymousResponseOmitsGatedDetail(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(200, map[string]any{
+		"status": "ok", "db": "ok", "timestamp": "2026-01-01T00:00:00Z",
+	}))
+	client := newMockClient(t, mt)
+
+	res, err := client.Health.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "ok" || res.DB != "ok" {
+		t.Errorf("unexpected health: %+v", res)
+	}
+	if res.Sidekiq != nil {
+		t.Errorf("Sidekiq must be nil when not reported, got %+v", res.Sidekiq)
 	}
 }
 
@@ -453,6 +487,85 @@ func TestWebhooks_Delete(t *testing.T) {
 	req := mt.recorded[0]
 	if req.Method != http.MethodDelete || req.URL.Path != "/webhooks/wh_1" {
 		t.Errorf("got %s %s", req.Method, req.URL.Path)
+	}
+}
+
+// ================================================================
+//  Webhook delivery signature verification
+// ================================================================
+
+const webhookSecret = "shhh-a-shared-secret"
+
+// webhookSignature is an independent implementation of the gateway's scheme
+// (OpenSSL::HMAC.hexdigest("SHA256", secret, "#{timestamp}.#{body}")), so the
+// tests cross-check the SDK rather than reuse its code.
+func webhookSignature(t *testing.T, secret, timestamp, body string) string {
+	t.Helper()
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(timestamp + "." + body))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestVerifyWebhookSignature_AcceptsAGenuineDelivery(t *testing.T) {
+	body := `{"topic":"payments.captured","payment":{"rail0_id":"0xabc"}}`
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+
+	if !rail0.VerifyWebhookSignature(webhookSecret, body, ts, webhookSignature(t, webhookSecret, ts, body)) {
+		t.Error("a correctly signed, fresh delivery must verify")
+	}
+	// Hex case carries no meaning — an upper-case digest is the same digest.
+	upper := strings.ToUpper(webhookSignature(t, webhookSecret, ts, body))
+	if !rail0.VerifyWebhookSignature(webhookSecret, body, ts, upper) {
+		t.Error("an upper-case hex signature must verify")
+	}
+}
+
+func TestVerifyWebhookSignature_RejectsForgeriesAndTampering(t *testing.T) {
+	body := `{"topic":"payments.captured"}`
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	sig := webhookSignature(t, webhookSecret, ts, body)
+
+	cases := []struct {
+		name                          string
+		secret, body, timestamp, sign string
+	}{
+		{"wrong secret", "other-secret", body, ts, sig},
+		{"tampered body", webhookSecret, `{"topic":"payments.voided"}`, ts, sig},
+		// The timestamp is inside the preimage, so it cannot be moved forward to
+		// refresh a captured delivery — that is what bounds the replay.
+		{"tampered timestamp", webhookSecret, body, strconv.FormatInt(time.Now().Unix()+1, 10), sig},
+		{"empty secret", "", body, ts, webhookSignature(t, "", ts, body)},
+		{"missing signature", webhookSecret, body, ts, ""},
+		{"missing timestamp", webhookSecret, body, "", sig},
+		{"non-numeric timestamp", webhookSecret, body, "not-a-timestamp", sig},
+		{"non-hex signature", webhookSecret, body, ts, "zzzz"},
+		{"truncated signature", webhookSecret, body, ts, sig[:32]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if rail0.VerifyWebhookSignature(tc.secret, tc.body, tc.timestamp, tc.sign) {
+				t.Error("expected verification to fail")
+			}
+		})
+	}
+}
+
+// A delivery outside the tolerance window is refused even though its signature is
+// valid — symmetrically, so a timestamp far in the future is no proof of freshness.
+func TestVerifyWebhookSignature_RejectsOutsideToleranceWindow(t *testing.T) {
+	body := `{"topic":"payments.captured"}`
+
+	for _, offset := range []int64{-(rail0.WebhookToleranceSecs + 60), rail0.WebhookToleranceSecs + 60} {
+		ts := strconv.FormatInt(time.Now().Unix()+offset, 10)
+		if rail0.VerifyWebhookSignature(webhookSecret, body, ts, webhookSignature(t, webhookSecret, ts, body)) {
+			t.Errorf("a delivery %ds away must be rejected", offset)
+		}
+	}
+
+	// Just inside the window is still accepted.
+	ts := strconv.FormatInt(time.Now().Unix()-(rail0.WebhookToleranceSecs-10), 10)
+	if !rail0.VerifyWebhookSignature(webhookSecret, body, ts, webhookSignature(t, webhookSecret, ts, body)) {
+		t.Error("a delivery inside the tolerance window must verify")
 	}
 }
 

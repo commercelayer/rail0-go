@@ -314,7 +314,15 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 				})
 			}
 			if willRetry {
-				override = apiErr.RetryAfter
+				// Only a POSITIVE Retry-After overrides the backoff. parseRetryAfter
+				// returns 0 for an absent, unparseable or already-elapsed header — and 0
+				// is a real duration to the `delay < 0` guard above, so storing it would
+				// mean time.After(0) and a burst of back-to-back requests against the
+				// very limiter that asked us to slow down. Leaving override at -1 is what
+				// makes the documented "falls back to the exponential backoff" true.
+				if apiErr.RetryAfter > 0 {
+					override = apiErr.RetryAfter
+				}
 				continue
 			}
 			return apiErr
