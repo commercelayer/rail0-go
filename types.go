@@ -6,8 +6,9 @@ package rail0
 
 // CreatePaymentRequest is the flat body for POST /payments.
 type CreatePaymentRequest struct {
-	ChainID     int     `json:"chain_id"`
-	Mode        string  `json:"mode"`
+	ChainID int    `json:"chain_id"`
+	Mode    string `json:"mode"`
+	// Human decimal amount (e.g. "10.50") — the gateway converts to token base units.
 	Amount      string  `json:"amount"`
 	Token       Address `json:"token"`
 	Payer       Address `json:"payer"`
@@ -23,7 +24,8 @@ type PayerSignatureRequest struct {
 }
 
 // PrepareRequest is the optional body for POST /payments/{id}/{op}/prepare.
-//   - Amount is required for capture and refund.
+//   - Amount is required for capture and refund — a human decimal (e.g. "10.50");
+//     the gateway converts to token base units.
 //   - Signature is the payee's EIP-3009 signature, required for refund phase-2.
 //   - From overrides the submitter address (release; defaults to the payer).
 //
