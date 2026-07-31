@@ -1,0 +1,55 @@
+# Build, vet, format-check and test on every push and pull request.
+#
+# There was no CI here at all, and the gap was not hypothetical: `error.go` sat
+# unformatted on `main` (an aligned map literal gofmt disagreed with) until someone
+# happened to run `gofmt -l` locally. A repo that four other repos depend on for
+# signing correctness should not rely on that.
+#
+# Deliberately the same four checks the CLI's workflow runs, in the same order, so
+# the two Go repos fail for the same reasons in the same way.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Tracks the `go` directive in go.mod. Kept as a major.minor string, not
+          # 'stable': a toolchain bump should be a visible commit here, not something
+          # that changes under the repo on a Tuesday.
+          go-version: "1.25"
+          cache-dependency-path: go.sum
+
+      # Reported as a diff, not a bare exit code: "gofmt failed" tells you nothing,
+      # the diff tells you exactly what to apply.
+      - name: gofmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "::error::gofmt needed on:"; gofmt -l .
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # ./... covers the package tests and the ./test suite, which is where the
+      # signing vectors live — the digests are cross-checked against an independent
+      # recomputation, so a broken field mapping fails here rather than on-chain.
+      - name: Test
+        run: go test ./...
