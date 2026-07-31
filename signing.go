@@ -75,11 +75,21 @@ type SignTransferParams struct {
 // The contract hardcodes validAfter=0 and validBefore=Payment.AuthorizationExpiry;
 // these are not configurable by the caller.
 type SignPaymentParams struct {
-	// PrivateKey is the 32-byte secp256k1 private key of the payer.
+	// PrivateKey is the 32-byte secp256k1 private key of the signer — the payer for
+	// SignAuthorize/SignCharge, the payee for SignReceiveWithAuthorization.
 	// Use HexToPrivateKey to convert from a 0x-prefixed hex string.
 	PrivateKey []byte
 	Payment    PaymentConfig
-	// Amount is the amount to pull from the payer, in token base units.
+	// Amount is the value of the EIP-3009 authorization, in token base units.
+	//
+	// For SignAuthorize/SignCharge it is OPTIONAL and exists only as a
+	// cross-check: the contract binds value to the payment's own amount, so the
+	// value signed is always Payment.Amount. Leave it nil, or set it to the same
+	// number and a mismatch is reported as an error instead of producing a
+	// signature the gateway would reject.
+	//
+	// For SignReceiveWithAuthorization it is REQUIRED and free: a refund may be
+	// partial, so the refunded amount is not derivable from Payment.Amount.
 	Amount *big.Int
 	// Nonce from CreatePayment response: resp.SigningPayload.Message.Nonce.
 	Nonce           Bytes32
@@ -214,6 +224,28 @@ func doSign(privateKey []byte, digest []byte) (Eip3009Signature, error) {
 	return Eip3009Signature{V: v, R: r, S: s}, nil
 }
 
+// authorizedValue resolves the value to sign for an authorize/charge digest.
+//
+// The RAIL0 contract passes the payment's own amount as the EIP-3009 `value`
+// (`transferWithAuthorization(p.payer, address(this), p.amount, …)`) and the
+// gateway builds the signing payload the same way, so exactly ONE value can ever
+// produce an accepted signature: Payment.Amount. It is therefore derived here
+// rather than taken from the caller. params.Amount is kept as an optional
+// cross-check — when it is set and disagrees, the caller has a wrong number in
+// hand and would otherwise learn about it only from a 422 signer_mismatch (or a
+// reverted transaction after gas), so fail loudly and locally instead.
+func authorizedValue(params SignPaymentParams) (*big.Int, error) {
+	value, ok := new(big.Int).SetString(params.Payment.Amount, 10)
+	if !ok {
+		return nil, fmt.Errorf("rail0: invalid Payment.Amount %q: want a base-unit decimal integer string", params.Payment.Amount)
+	}
+	if params.Amount != nil && params.Amount.Cmp(value) != 0 {
+		return nil, fmt.Errorf("rail0: Amount %s disagrees with Payment.Amount %s: the contract signs the payment amount, so leave Amount nil or pass the same value",
+			params.Amount, value)
+	}
+	return value, nil
+}
+
 // ================================================================
 //  Public signing API
 // ================================================================
@@ -232,48 +264,70 @@ func SignTransferWithAuthorization(privateKey []byte, domain TokenDomain, params
 }
 
 // SignAuthorize signs the EIP-3009 payload required by an Authorize call. The
-// nonce comes from the create response's signing payload; the packed signature
-// is deposited via Payments.Sign (not spread into the submit call).
+// value signed is Payment.Amount (the only one the contract accepts — see
+// SignPaymentParams.Amount). The nonce comes from the create response's signing
+// payload; the packed signature is deposited via Payments.Sign (not spread into
+// the submit call).
 //
 //	created, _ := client.Payments.Create(ctx, req)
-//	cfg := rail0.PaymentConfig{Payer: created.Payer /* …from the create response */}
+//	cfg := rail0.PaymentConfig{Payer: created.Payer, Amount: created.Amount /* …from the create response */}
 //	sig, _ := rail0.SignAuthorize(rail0.SignPaymentParams{
-//	    PrivateKey: key, Payment: cfg, Amount: big.NewInt(50_000_000),
+//	    PrivateKey: key, Payment: cfg,
 //	    Nonce: created.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
 //	})
 //	packed := fmt.Sprintf("0x%s%s%02x", sig.R[2:], sig.S[2:], sig.V)
 //	client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
 func SignAuthorize(params SignPaymentParams) (Eip3009Signature, error) {
+	value, err := authorizedValue(params)
+	if err != nil {
+		return Eip3009Signature{}, err
+	}
 	digest := buildDigest(params.TokenDomain, params.Payment.Payer, params.ContractAddress,
-		params.Amount, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)
+		value, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)
 	return doSign(params.PrivateKey, digest)
 }
 
 // SignCharge signs the EIP-3009 payload required by a Charge call. Identical
-// digest to SignAuthorize; the operation is distinguished by the nonce prefix
-// the gateway encodes. The nonce comes from the create response's signing
-// payload, and the packed signature is deposited via Payments.Sign.
+// digest to SignAuthorize (value = Payment.Amount included); the operation is
+// distinguished by the nonce prefix the gateway encodes. The nonce comes from the
+// create response's signing payload, and the packed signature is deposited via
+// Payments.Sign.
 //
 //	created, _ := client.Payments.Create(ctx, req) // req.Mode == "charge"
-//	cfg := rail0.PaymentConfig{Payer: created.Payer /* …from the create response */}
+//	cfg := rail0.PaymentConfig{Payer: created.Payer, Amount: created.Amount /* …from the create response */}
 //	sig, _ := rail0.SignCharge(rail0.SignPaymentParams{
-//	    PrivateKey: key, Payment: cfg, Amount: big.NewInt(25_000_000),
+//	    PrivateKey: key, Payment: cfg,
 //	    Nonce: created.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
 //	})
 //	packed := fmt.Sprintf("0x%s%s%02x", sig.R[2:], sig.S[2:], sig.V)
 //	client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
 func SignCharge(params SignPaymentParams) (Eip3009Signature, error) {
+	value, err := authorizedValue(params)
+	if err != nil {
+		return Eip3009Signature{}, err
+	}
 	digest := buildDigest(params.TokenDomain, params.Payment.Payer, params.ContractAddress,
-		params.Amount, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)
+		value, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)
 	return doSign(params.PrivateKey, digest)
 }
 
 // SignReceiveWithAuthorization signs an EIP-3009 receiveWithAuthorization message.
 // Used for refund flows where the payee authorises the token transfer back to the payer.
 // The typehash differs from TransferWithAuthorization — FiatTokenV2 enforces both.
+//
+// The signer here is the PAYEE, not the payer: a refund moves funds the payee
+// already holds, so the contract calls receiveWithAuthorization(p.payee,
+// address(this), …) and `from` must be the payee — otherwise the token recovers a
+// signer that isn't `from` and the transaction reverts. PrivateKey must be the
+// payee's key, and Amount is the (possibly partial) refunded amount.
 func SignReceiveWithAuthorization(params SignPaymentParams) (Eip3009Signature, error) {
+	// Unlike authorize/charge there is nothing to derive it from — a refund may be
+	// partial — and a nil *big.Int would panic inside the ABI encoding.
+	if params.Amount == nil {
+		return Eip3009Signature{}, errors.New("rail0: Amount is required for SignReceiveWithAuthorization (the refunded amount, in token base units)")
+	}
 	digest := buildDigestWithTypehash(receiveTypehash,
-		params.TokenDomain, params.Payment.Payer, params.ContractAddress,
+		params.TokenDomain, params.Payment.Payee, params.ContractAddress,
 		params.Amount, new(big.Int), big.NewInt(params.Payment.RefundExpiry), params.Nonce)
 	return doSign(params.PrivateKey, digest)
 }

@@ -2,9 +2,14 @@ package rail0
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // WebhooksService exposes webhook subscription management (requires JWT).
@@ -30,6 +35,66 @@ const (
 // Webhook (the webhook subscription shape, including the SharedSecret returned
 // only on create and rotate_secret) and EventCallback (a single delivery
 // attempt) are generated from the gateway OpenAPI schema in types_gen.go.
+
+// Headers carried by every webhook delivery.
+const (
+	HeaderWebhookTopic     = "X-Rail0-Topic"
+	HeaderWebhookTimestamp = "X-Rail0-Timestamp"
+	HeaderWebhookSignature = "X-Rail0-Signature"
+)
+
+// WebhookToleranceSecs is the accepted clock skew, in seconds, between the
+// delivery's X-Rail0-Timestamp and now — applied symmetrically (a timestamp too
+// far in the FUTURE is rejected too, since a clock an attacker controls is not
+// evidence of freshness). Matches the gateway's own ±5 minutes.
+const WebhookToleranceSecs = 300
+
+// VerifyWebhookSignature reports whether a webhook delivery is authentic: an
+// HMAC-SHA256 over "{timestamp}.{body}" keyed with the webhook's shared secret,
+// compared in constant time, plus a timestamp inside WebhookToleranceSecs.
+//
+// secret is the one-time SharedSecret from Create/RotateSecret; body is the RAW
+// request body (verify before any JSON re-parse — re-serialising changes the bytes
+// and invalidates the digest); timestamp and signature are the X-Rail0-Timestamp
+// and X-Rail0-Signature header values verbatim.
+//
+//	body, _ := io.ReadAll(r.Body)
+//	if !rail0.VerifyWebhookSignature(secret, string(body),
+//	    r.Header.Get(rail0.HeaderWebhookTimestamp), r.Header.Get(rail0.HeaderWebhookSignature)) {
+//	    http.Error(w, "invalid signature", http.StatusUnauthorized)
+//	    return
+//	}
+//
+// The timestamp is what bounds a replay: it is inside the signed preimage, so it
+// cannot be edited, and refusing a stale one is what stops a captured delivery
+// from being replayed forever. This requires a gateway that sends the timestamped
+// signature (rail0-gateway#176, from 2026-07-31); against an older gateway, which
+// signed the body alone with no X-Rail0-Timestamp, every delivery fails here.
+func VerifyWebhookSignature(secret, body, timestamp, signature string) bool {
+	// A blank secret would make the digest trivially forgeable (anyone can compute
+	// HMAC("", …)), so treat it as a failure rather than fail open.
+	if secret == "" || timestamp == "" || signature == "" {
+		return false
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(timestamp), 10, 64)
+	if err != nil {
+		return false
+	}
+	if drift := time.Now().Unix() - ts; drift > WebhookToleranceSecs || drift < -WebhookToleranceSecs {
+		return false
+	}
+	// Decoding the candidate (rather than hex-encoding ours) keeps the comparison on
+	// raw bytes: hmac.Equal is constant time, and hex case never matters.
+	got, err := hex.DecodeString(strings.TrimSpace(signature))
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	// The timestamp is signed exactly as it arrived on the wire — the gateway keys
+	// the digest with that same string, so a normalised copy would not match.
+	mac.Write([]byte(timestamp + "." + body))
+	return hmac.Equal(mac.Sum(nil), got)
+}
 
 // ListWebhooksParams holds optional query parameters for WebhooksService.List.
 type ListWebhooksParams struct {

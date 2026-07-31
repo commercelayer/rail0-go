@@ -276,7 +276,6 @@ func TestRetryAfter_ZeroWhenHeaderAbsent(t *testing.T) {
 func TestRetryAfter_RetriesWhenOptedIn(t *testing.T) {
 	mt := &mockTransport{t: t}
 	resp := jsonResp(429, map[string]any{"code": "RateLimited"})
-	resp.Header.Set("Retry-After", "0") // 0 → falls back to (tiny) backoff, no real sleep
 	mt.push(resp)
 	mt.push(jsonResp(200, mockCreatePaymentResp))
 	client := newMockClient(t, mt, func(o *rail0.ClientOptions) {
@@ -294,6 +293,40 @@ func TestRetryAfter_RetriesWhenOptedIn(t *testing.T) {
 	}
 	if mt.i != 2 {
 		t.Errorf("expected 2 attempts (429 then 200), got %d", mt.i)
+	}
+}
+
+// A Retry-After of "0" — like an absent or unparseable one — means "not supplied",
+// so the exponential backoff must still be applied. Storing that 0 as the delay
+// override made the retry immediate (time.After(0)), turning the whole MaxRetries
+// budget into a burst against the limiter that just asked us to slow down.
+// The delay is measured, since only the wall clock distinguishes the two.
+func TestRetryAfter_ZeroHeaderStillBacksOff(t *testing.T) {
+	mt := &mockTransport{t: t}
+	resp := jsonResp(429, map[string]any{"code": "RateLimited"})
+	resp.Header.Set("Retry-After", "0")
+	mt.push(resp)
+	mt.push(jsonResp(200, mockCreatePaymentResp))
+	backoff := 60 * time.Millisecond
+	client := newMockClient(t, mt, func(o *rail0.ClientOptions) {
+		o.RetryOn429 = true
+		o.MaxRetries = 2
+		o.RetryDelay = backoff
+	})
+
+	start := time.Now()
+	if _, err := client.Payments.Create(context.Background(), mockCreateReq); err != nil {
+		t.Fatalf("expected success after a 429 retry, got: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if mt.i != 2 {
+		t.Errorf("expected 2 attempts (429 then 200), got %d", mt.i)
+	}
+	// Attempt 2 waits RetryDelay * 2^0; a lower bound only, so a slow machine can't
+	// make this flaky.
+	if elapsed < backoff {
+		t.Errorf("expected the exponential backoff to be applied (>= %s), waited only %s", backoff, elapsed)
 	}
 }
 

@@ -336,7 +336,10 @@ func disputeBody(reason ...string) map[string]any {
 }
 
 // DisputePrepare builds the unsigned dispute() transaction (payer only).
-// reason is an optional bytes32 code (0x…); defaults to zero server-side.
+//
+// reason is an optional code that must be a FULL bytes32 when given: "0x" plus
+// exactly 64 hex digits (right-pad a short code — "0x01" and friends are rejected
+// with a 400). Omit it and the gateway defaults to the zero bytes32.
 func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
 	var out Transaction
 	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/prepare", disputeBody(reason...), &out); err != nil {
@@ -355,6 +358,9 @@ func (s *PaymentsService) Dispute(ctx context.Context, paymentID Bytes32, params
 }
 
 // CloseDisputePrepare builds the unsigned closeDispute() transaction (payer only).
+//
+// reason follows the same rule as DisputePrepare: a full bytes32 ("0x" + 64 hex
+// digits) when given, zero by default.
 func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
 	var out Transaction
 	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close/prepare", disputeBody(reason...), &out); err != nil {

@@ -119,7 +119,17 @@ tokens, _ := client.Tokens.List(ctx, rail0.ListTokensParams{ChainID: 8453}) // G
 ```go
 h, _ := client.Health.Get(ctx) // GET /health
 fmt.Println(h.Status, h.ActiveChains)
+if h.Sidekiq != nil { // authenticated calls only — see below
+    fmt.Println(h.Sidekiq.Status, h.Sidekiq.Processes, h.Sidekiq.Enqueued)
+}
 ```
+
+The endpoint is public, but only `Status`, `DB` and `Timestamp` come back to an
+anonymous caller: `APIVersion`, `ContractVersion`, `ActiveChains`,
+`ActiveContracts` and `Sidekiq` are session-gated, so set a token on the client
+first or they arrive zero-valued (`Sidekiq` nil). `Status` is `"ok"`,
+`"degraded"` (database fine, workers not — `Sidekiq` says why) or `"error"`
+(database down, the only case that also returns HTTP 503).
 
 ## Wallets (under accounts, JWT)
 
@@ -274,8 +284,11 @@ broadcasts the signed raw tx. The on-chain event then flips the payment's
 `Disputed` flag.
 
 ```go
-// Open a dispute (payer only). reason is an optional bytes32 code (0x…).
-tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, "0x01")
+// Open a dispute (payer only). reason is optional but must be a FULL bytes32
+// when given — "0x" + exactly 64 hex digits (right-pad a short code); omit it
+// and the gateway defaults to the zero bytes32.
+tx, _ := client.Payments.DisputePrepare(ctx, rail0ID,
+    "0x0100000000000000000000000000000000000000000000000000000000000000")
 // sign tx.UnsignedTransaction → signedBytes
 client.Payments.Dispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
@@ -356,8 +369,10 @@ raw, _ := rail0.SignTransaction(tx.UnsignedTransaction, key)
 client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: raw})
 
 // EIP-3009 payer authorization (authorize/charge). SignCharge is the charge variant.
+// The signed value is cfg.Amount — the contract accepts no other — so there is
+// nothing to pass: an Amount that disagrees with it is rejected with an error.
 sig, _ := rail0.SignAuthorize(rail0.SignPaymentParams{
-    PrivateKey: key, Payment: cfg, Amount: big.NewInt(50_000_000),
+    PrivateKey: key, Payment: cfg,
     Nonce: created.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
 })
 // Pack {v,r,s} into the 65-byte hex the gateway expects (r || s || v):
@@ -366,10 +381,24 @@ client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature
 
 // EIP-3009 payee refund authorization: SignReceiveWithAuthorization (from a
 // PaymentConfig) or SignReceiveWithAuthorizationRaw (from explicit payload fields).
+// Signed by the PAYEE (from = payee, since the refund returns funds the payee
+// holds) and over the refunded amount, which may be partial:
+sig, _ = rail0.SignReceiveWithAuthorization(rail0.SignPaymentParams{
+    PrivateKey: payeeKey, Payment: cfg, Amount: big.NewInt(20_000_000),
+    Nonce: phase1.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
+})
 ```
 
 Signing helpers: `HexToPrivateKey`, `SignTransaction`, `SignTransferWithAuthorization`,
 `SignAuthorize`, `SignCharge`, `SignReceiveWithAuthorization`, `SignReceiveWithAuthorizationRaw`.
+
+The `SignPaymentParams` helpers above re-derive the digest from a `PaymentConfig`,
+which is only correct while the gateway's payload keeps its current shape. The
+robust alternative is to sign the gateway's `signing_payload` **verbatim** —
+branch on `sp.PrimaryType` and feed `sp.Domain` / `sp.Message` straight into
+`SignTransferWithAuthorization` or `SignReceiveWithAuthorizationRaw` — so a
+contract-version change to the typehash or the field layout can never leave you
+signing the wrong digest.
 
 ### Stablecoin registry
 
@@ -419,6 +448,32 @@ Topics: `payments.created`, `payments.signed`, `payments.authorized`,
 `payments.released`, `payments.refunded`, `payments.failed`,
 `payments.disputed`, `payments.dispute_closed`
 (also available as `rail0.TopicPayments*` constants).
+
+### Verifying a delivery
+
+Every delivery carries `X-Rail0-Topic`, `X-Rail0-Timestamp` and
+`X-Rail0-Signature` — a hex HMAC-SHA256 over `"{timestamp}.{body}"` keyed with the
+webhook's shared secret. `VerifyWebhookSignature` does the compare in constant
+time and enforces the ±5 min freshness window (`rail0.WebhookToleranceSecs`), so
+there is no need to hand-roll it:
+
+```go
+func handler(w http.ResponseWriter, r *http.Request) {
+    body, _ := io.ReadAll(r.Body) // the RAW body: verify before any JSON re-parse
+    if !rail0.VerifyWebhookSignature(secret, string(body),
+        r.Header.Get(rail0.HeaderWebhookTimestamp), r.Header.Get(rail0.HeaderWebhookSignature)) {
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        return
+    }
+    // …handle r.Header.Get(rail0.HeaderWebhookTopic)
+}
+```
+
+The timestamp is inside the signed preimage, which is what bounds a replay: it
+cannot be moved forward to refresh a captured delivery. This requires a gateway
+sending the timestamped signature (rail0-gateway#176, from 2026-07-31) — against
+an older gateway, which signed the body alone and sent no `X-Rail0-Timestamp`,
+every delivery fails verification.
 
 ## Sorting
 
