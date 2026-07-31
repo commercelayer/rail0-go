@@ -476,3 +476,217 @@ func TestSignReceiveWithAuthorization_RequiresAmount(t *testing.T) {
 		t.Error("expected an error when Amount is nil")
 	}
 }
+
+// ================================================================
+//  SignSigningPayload — the payload-verbatim signer (#27)
+// ================================================================
+//
+// The rule these pin: the gateway builds the signing payload, and the client signs
+// it as given. Which typehash to use is stated by the payload's primaryType, never
+// inferred. A rebuilt digest yields a well-formed signature over the WRONG digest —
+// reported as success, failing only on-chain, after gas.
+
+func testPayload(primaryType string) *rail0.SigningPayload {
+	return &rail0.SigningPayload{
+		PrimaryType: primaryType,
+		Domain: rail0.EIP712Domain{
+			Name:              "USD Coin",
+			Version:           "2",
+			ChainId:           8453,
+			VerifyingContract: tokenAddress,
+		},
+		Message: rail0.EIP3009Message{
+			From:        payerAddress,
+			To:          contractAddress,
+			Value:       "50000000",
+			ValidAfter:  "0",
+			ValidBefore: "9999999999",
+			Nonce:       testNonce,
+		},
+	}
+}
+
+// The digest is cross-checked against an independent recomputation, per primary
+// type — so a mistake in the field mapping cannot pass by agreeing with itself.
+func TestSignSigningPayload_MatchesTheIndependentDigest(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	for _, tc := range []struct {
+		primaryType string
+		digest      func() []byte
+	}{
+		{rail0.PrimaryTypeTransfer, func() []byte {
+			return recomputeDigest(testDomain, payerAddress, contractAddress,
+				big.NewInt(50_000_000), new(big.Int), big.NewInt(9999999999), testNonce)
+		}},
+		{rail0.PrimaryTypeReceive, func() []byte {
+			return recomputeReceiveDigest(testDomain, payerAddress, contractAddress,
+				big.NewInt(50_000_000), new(big.Int), big.NewInt(9999999999), testNonce)
+		}},
+	} {
+		sig, err := rail0.SignSigningPayload(key, testPayload(tc.primaryType))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.primaryType, err)
+		}
+		if got := recoverSigner(t, sig, tc.digest()); !strings.EqualFold(got, payerAddress) {
+			t.Errorf("%s: recovered %s, want %s — the payload fields are not reaching the digest",
+				tc.primaryType, got, payerAddress)
+		}
+	}
+}
+
+// The typehash is part of the digest, so identical signatures would mean
+// primaryType was ignored.
+func TestSignSigningPayload_HonoursPrimaryType(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	transfer, err := rail0.SignSigningPayload(key, testPayload(rail0.PrimaryTypeTransfer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receive, err := rail0.SignSigningPayload(key, testPayload(rail0.PrimaryTypeReceive))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if rail0.PackSignature(transfer) == rail0.PackSignature(receive) {
+		t.Error("the two primary types produced the same signature — the typehash is being ignored")
+	}
+}
+
+// A silent fallback to one of the two known typehashes is how a client older than
+// its gateway signs the wrong digest and reports success.
+func TestSignSigningPayload_RefusesAnUnknownPrimaryType(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	_, err := rail0.SignSigningPayload(key, testPayload("SomeFutureAuthorization"))
+	if err == nil {
+		t.Fatal("an unknown primaryType must not be signed")
+	}
+	if !strings.Contains(err.Error(), "SomeFutureAuthorization") {
+		t.Errorf("the error should name the offending primaryType, got: %v", err)
+	}
+	// It must also say WHY, so the reader reaches for an upgrade rather than a key.
+	if !strings.Contains(err.Error(), "older than the gateway") {
+		t.Errorf("the error should point at the version skew, got: %v", err)
+	}
+
+	if _, err := rail0.SignSigningPayload(key, testPayload("")); err == nil {
+		t.Error("an empty primaryType must not be signed either")
+	}
+}
+
+// Everything signed comes from the payload, so changing any one field must change
+// the signature. This is what fails if someone reintroduces a record-derived path.
+func TestSignSigningPayload_ReadsEveryPayloadField(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	base, err := rail0.SignSigningPayload(key, testPayload(rail0.PrimaryTypeTransfer))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		field  string
+		mutate func(*rail0.SigningPayload)
+	}{
+		{"message.value", func(p *rail0.SigningPayload) { p.Message.Value = "50000001" }},
+		{"message.from", func(p *rail0.SigningPayload) { p.Message.From = payeeAddress }},
+		{"message.to", func(p *rail0.SigningPayload) { p.Message.To = payeeAddress }},
+		{"message.validAfter", func(p *rail0.SigningPayload) { p.Message.ValidAfter = "1" }},
+		{"message.validBefore", func(p *rail0.SigningPayload) { p.Message.ValidBefore = "8888888888" }},
+		{"message.nonce", func(p *rail0.SigningPayload) { p.Message.Nonce = strings.Replace(testNonce, "aa", "bb", -1) }},
+		{"domain.name", func(p *rail0.SigningPayload) { p.Domain.Name = "Other Coin" }},
+		{"domain.version", func(p *rail0.SigningPayload) { p.Domain.Version = "1" }},
+		{"domain.chainId", func(p *rail0.SigningPayload) { p.Domain.ChainId = 1 }},
+		{"domain.verifyingContract", func(p *rail0.SigningPayload) { p.Domain.VerifyingContract = contractAddress }},
+	} {
+		p := testPayload(rail0.PrimaryTypeTransfer)
+		tc.mutate(p)
+		got, err := rail0.SignSigningPayload(key, p)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.field, err)
+		}
+		if rail0.PackSignature(got) == rail0.PackSignature(base) {
+			t.Errorf("changing %s did not change the signature — that field is not read from the payload", tc.field)
+		}
+	}
+}
+
+// These arrive off the wire, so "invalid value" without the field name is a dead end.
+func TestSignSigningPayload_NamesAMalformedField(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	for _, tc := range []struct {
+		field  string
+		mutate func(*rail0.SigningPayload)
+	}{
+		{"value", func(p *rail0.SigningPayload) { p.Message.Value = "not-a-number" }},
+		{"validAfter", func(p *rail0.SigningPayload) { p.Message.ValidAfter = "" }},
+		{"validBefore", func(p *rail0.SigningPayload) { p.Message.ValidBefore = "0x10" }},
+	} {
+		p := testPayload(rail0.PrimaryTypeTransfer)
+		tc.mutate(p)
+		_, err := rail0.SignSigningPayload(key, p)
+		if err == nil {
+			t.Errorf("%s: a malformed field must be rejected", tc.field)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("the error should name %q, got: %v", tc.field, err)
+		}
+	}
+}
+
+func TestSignSigningPayload_RejectsANilPayload(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+	if _, err := rail0.SignSigningPayload(key, nil); err == nil {
+		t.Error("a nil signing payload must be rejected")
+	}
+}
+
+// A refund payload's `from` is the PAYEE — the funds being moved are already the
+// merchant's — so signing it with the payee key must recover the payee.
+func TestSignSigningPayload_RefundRecoversThePayee(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(payeePrivateKeyHex)
+
+	p := testPayload(rail0.PrimaryTypeReceive)
+	p.Message.From = payeeAddress
+
+	sig, err := rail0.SignSigningPayload(key, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	digest := recomputeReceiveDigest(testDomain, payeeAddress, contractAddress,
+		big.NewInt(50_000_000), new(big.Int), big.NewInt(9999999999), testNonce)
+	if got := recoverSigner(t, sig, digest); !strings.EqualFold(got, payeeAddress) {
+		t.Errorf("recovered %s, want the payee %s", got, payeeAddress)
+	}
+}
+
+// PackSignature is the format PUT /payments/{id}/sign takes; every caller was
+// assembling it by hand.
+func TestPackSignature(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+	sig, err := rail0.SignSigningPayload(key, testPayload(rail0.PrimaryTypeTransfer))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	packed := rail0.PackSignature(sig)
+	if len(packed) != 132 {
+		t.Errorf("packed signature is %d chars, want 132 (0x + r + s + v)", len(packed))
+	}
+	if !strings.HasPrefix(packed, "0x") {
+		t.Errorf("packed signature must be 0x-prefixed: %q", packed)
+	}
+	// v is one byte, zero-padded — a bare %x would emit "1b" fine but drop a leading
+	// zero for any other value.
+	if tail := packed[130:]; tail != "1b" && tail != "1c" {
+		t.Errorf("packed signature ends in v=%q, want 1b or 1c", tail)
+	}
+	if packed[2:66] != strings.TrimPrefix(sig.R, "0x") || packed[66:130] != strings.TrimPrefix(sig.S, "0x") {
+		t.Error("packed signature does not carry r then s")
+	}
+}

@@ -368,37 +368,34 @@ key, _ := rail0.HexToPrivateKey("0x…") // 0x-hex → 32 raw bytes
 raw, _ := rail0.SignTransaction(tx.UnsignedTransaction, key)
 client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: raw})
 
-// EIP-3009 payer authorization (authorize/charge). SignCharge is the charge variant.
-// The signed value is cfg.Amount — the contract accepts no other — so there is
-// nothing to pass: an Amount that disagrees with it is rejected with an error.
-sig, _ := rail0.SignAuthorize(rail0.SignPaymentParams{
-    PrivateKey: key, Payment: cfg,
-    Nonce: created.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
-})
-// Pack {v,r,s} into the 65-byte hex the gateway expects (r || s || v):
-packed := fmt.Sprintf("0x%s%s%02x", sig.R[2:], sig.S[2:], sig.V)
+// EIP-3009 authorization: sign the gateway's signing_payload VERBATIM. One call
+// for every operation — authorize, charge, refund — because which typehash and
+// which fields to use is stated by the payload itself.
+sig, _ := rail0.SignSigningPayload(key, created.SigningPayload)
+packed := rail0.PackSignature(sig) // 0x + r || s || v, what the gateway expects
 client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
 
-// EIP-3009 payee refund authorization: SignReceiveWithAuthorization (from a
-// PaymentConfig) or SignReceiveWithAuthorizationRaw (from explicit payload fields).
-// Signed by the PAYEE (from = payee, since the refund returns funds the payee
-// holds) and over the refunded amount, which may be partial:
-sig, _ = rail0.SignReceiveWithAuthorization(rail0.SignPaymentParams{
-    PrivateKey: payeeKey, Payment: cfg, Amount: big.NewInt(20_000_000),
-    Nonce: phase1.SigningPayload.Message.Nonce, ContractAddress: contractAddr, TokenDomain: domain,
-})
+// A refund is the same call with the PAYEE's key — the refund payload's `from` is
+// the payee, since the funds being moved are already the merchant's.
+sig, _ = rail0.SignSigningPayload(payeeKey, phase1.SigningPayload)
 ```
 
-Signing helpers: `HexToPrivateKey`, `SignTransaction`, `SignTransferWithAuthorization`,
-`SignAuthorize`, `SignCharge`, `SignReceiveWithAuthorization`, `SignReceiveWithAuthorizationRaw`.
+Signing helpers: `HexToPrivateKey`, `SignTransaction`, **`SignSigningPayload`**,
+`PackSignature`, `SignTransferWithAuthorization`, `SignReceiveWithAuthorizationRaw`.
 
-The `SignPaymentParams` helpers above re-derive the digest from a `PaymentConfig`,
-which is only correct while the gateway's payload keeps its current shape. The
-robust alternative is to sign the gateway's `signing_payload` **verbatim** —
-branch on `sp.PrimaryType` and feed `sp.Domain` / `sp.Message` straight into
-`SignTransferWithAuthorization` or `SignReceiveWithAuthorizationRaw` — so a
-contract-version change to the typehash or the field layout can never leave you
-signing the wrong digest.
+**The gateway builds the payload; you sign it verbatim.** Only the gateway knows
+which contract version a payment lives on, and the version selects the typehash,
+the EIP-712 domain *and* the field layout. `SignSigningPayload` takes all three
+from the payload, so a contract change — rail0#58 moves authorize/charge to
+`ReceiveWithAuthorization` — needs no change here. An unrecognised `primaryType`
+returns an error naming the version skew rather than falling back, because a
+guessed typehash yields a *valid* signature over the wrong digest: it reports
+success and fails only on-chain, after gas, looking like a bad key.
+
+`SignAuthorize`, `SignCharge` and `SignReceiveWithAuthorization` are **deprecated**
+for that reason — they rebuild the digest from a `PaymentConfig`.
+`SignTransferWithAuthorization` and `SignReceiveWithAuthorizationRaw` remain as
+low-level escape hatches for talking to an EIP-3009 token outside a RAIL0 payment.
 
 ### Stablecoin registry
 
