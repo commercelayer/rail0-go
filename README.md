@@ -20,6 +20,14 @@ go get github.com/rail0/go-sdk
 runs the full SIWE flow with a local private key and **stashes the JWT on the same
 client**, so every subsequent call is authenticated — no manual header wiring.
 
+`Auth.Logout` ends the session for real: the gateway records the token's `jti` in
+its denylist, so the JWT stops being accepted **before** its `exp`, and the client
+drops it locally. Discarding a stored token without this leaves a bearer
+credential valid for the rest of its lifetime — whoever holds a copy keeps the
+session — so revoke before discarding, and before pointing a client at a
+different gateway. Check `Revoked`: `false` means the gateway accepted the request
+but could not record the revocation, and the token is still usable until `exp`.
+
 ```go
 client := rail0.NewClient(rail0.ClientOptions{BaseURL: "https://api.rail0.xyz"})
 ctx := context.Background()

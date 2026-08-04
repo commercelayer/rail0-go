@@ -36,6 +36,16 @@ type AuthResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+// LogoutResponse is returned by Logout. `Revoked` is the gateway's answer to the
+// question that matters: was the token actually added to the denylist? It is
+// false when the revocation could not be recorded (e.g. the denylist store was
+// unreachable), and then the token REMAINS USABLE until its own expiry — a caller
+// that cannot revoke should treat its copy as compromised rather than assume the
+// session ended.
+type LogoutResponse struct {
+	Revoked bool `json:"revoked"`
+}
+
 // GetNonce issues a single-use SIWE nonce from the API (POST /auth/nonces).
 func (s *AuthService) GetNonce(ctx context.Context) (*NonceResponse, error) {
 	var out NonceResponse
@@ -58,6 +68,27 @@ func (s *AuthService) Verify(ctx context.Context, req AuthRequest) (*AuthRespons
 	if out.Token != "" {
 		s.http.SetToken(out.Token)
 	}
+	return &out, nil
+}
+
+// Logout ends the current session by revoking the presented token server-side
+// (POST /auth/logout): the gateway records the token's `jti` in its denylist, so
+// the JWT stops being accepted before its `exp`.
+//
+// It requires the client to be authenticated — the token being revoked is the one
+// on the transport — and it also CLEARS that token locally, so the client cannot
+// keep sending a credential it just asked to have invalidated.
+//
+// Deleting a stored token without calling this leaves a bearer credential valid
+// for the rest of its lifetime: whoever holds a copy keeps the session. That is
+// why a caller that persists tokens (the CLI does) should revoke before
+// discarding — and before switching to another gateway.
+func (s *AuthService) Logout(ctx context.Context) (*LogoutResponse, error) {
+	var out LogoutResponse
+	if err := s.http.post(ctx, "/auth/logout", struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	s.http.SetToken("")
 	return &out, nil
 }
 
