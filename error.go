@@ -110,6 +110,7 @@ var errorHints = map[string]string{
 	"authorization_not_expired":  "release opens only after authorizationExpiry — wait until it passes",
 	"already_captured":           "already (partially) captured — use release for the remainder, not void",
 	"unsupported_payment_method": "the payee (merchant) doesn't accept this token/chain — check the merchant's payment methods",
+	"idempotency_key_reused":     "that Idempotency-Key was already used for a payment with different terms — reuse it only to retry the same request, or pick a new key",
 	"unknown_token":              "the token isn't configured on this chain",
 	"no_active_contract":         "no active RAIL0 contract on that chain",
 	"missing_param":              "a required parameter is missing from the request",

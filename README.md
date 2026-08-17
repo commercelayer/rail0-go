@@ -244,7 +244,9 @@ payments, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{
 // Get (embeds transactions)
 p, _ := client.Payments.Get(ctx, rail0ID)
 
-// Create — optional idempotency key replays the existing payment on retry
+// Create — optional idempotency key replays the existing payment on retry.
+// The key is bound to the request: reusing it with different terms returns
+// a 422 with code "idempotency_key_reused", never the first payment.
 resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
     ChainID: 8453, Mode: "authorize", Amount: "50.00",
     Token: "0x...", Payer: "0x...", Payee: "0x...",
