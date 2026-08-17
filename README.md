@@ -422,6 +422,11 @@ rail0.FormatAmount("1500000", 6)      // "1.5"     (trailing zeros trimmed)
 
 Fractional digits beyond `decimals` are truncated; a malformed amount errors.
 
+Which `decimals` to pass resolves from a payment's `Token` **together with** its
+`ChainID` — a token address identifies a token only within one chain. Both are on
+every `Payment`, list rows included, so formatting an amount from
+`Payments.List` never needs a per-row `Payments.Get`.
+
 ## Webhooks (JWT)
 
 ```go

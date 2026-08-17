@@ -760,6 +760,12 @@ func TestList_SendsQueryParamsAndDecodesPagination(t *testing.T) {
 	if len(res.Data) != 1 || res.Data[0].Rail0Id != mockPaymentID {
 		t.Errorf("Data: got %d payments, want the single fixture", len(res.Data))
 	}
+	// chain_id decodes on LIST rows, not only on the single-payment view: `amount` is
+	// in base units and the token's decimals resolve from token+chain, so a lister
+	// that cannot read the chain cannot render the amount. (gateway #193)
+	if res.Data[0].ChainID != 8453 {
+		t.Errorf("Data[0].ChainID: got %d, want 8453", res.Data[0].ChainID)
+	}
 }
 
 // ================================================================
