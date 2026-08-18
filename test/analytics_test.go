@@ -323,10 +323,11 @@ func TestRetryAfter_ZeroHeaderStillBacksOff(t *testing.T) {
 	if mt.i != 2 {
 		t.Errorf("expected 2 attempts (429 then 200), got %d", mt.i)
 	}
-	// Attempt 2 waits RetryDelay * 2^0; a lower bound only, so a slow machine can't
-	// make this flaky.
-	if elapsed < backoff {
-		t.Errorf("expected the exponential backoff to be applied (>= %s), waited only %s", backoff, elapsed)
+	// Attempt 2 waits RetryDelay * 2^0, jittered — equal jitter, so at least HALF of it
+	// (see backoff.go: a floor is what keeps "did we actually wait" observable). A lower
+	// bound only, so a slow machine can't make this flaky.
+	if elapsed < backoff/2 {
+		t.Errorf("expected the exponential backoff to be applied (>= %s), waited only %s", backoff/2, elapsed)
 	}
 }
 
