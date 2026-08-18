@@ -135,6 +135,73 @@ func (s *WalletsService) Delete(ctx context.Context, accountID, id string) error
 	return s.http.delete(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, id), nil)
 }
 
+// AddWalletTokenRequest is the body of AddToken: the (chain, token) pair this wallet
+// accepts, optionally as its default.
+type AddWalletTokenRequest struct {
+	ChainID int    `json:"chain_id"`
+	Token   string `json:"token"`
+	// Default makes this the wallet's default token. At most one default per wallet —
+	// setting it clears the others. Pointer so `false` can be sent explicitly, since
+	// omitting the field and clearing the flag are different requests.
+	Default *bool `json:"default,omitempty"`
+}
+
+// The four calls below manage WHAT A WALLET ACCEPTS, which is what drives the public
+// GET /payment_methods and gates payment creation: a wallet with no active holding is
+// invisible to buyers and unusable as a payee. rail0-ts and rail0-ruby have had them
+// since their wallet resources existed; without them a Go integration could create a
+// wallet and then had to leave the SDK to finish configuring it. (#33)
+//
+// `tokenID` on Remove/Enable/Disable is the TOKEN's UUID — WalletTokenHolding.TokenID,
+// not an id of the holding row: the gateway looks the holding up by (wallet, token). A
+// non-UUID is a clean 404.
+
+// AddToken accepts a token (chain) on this wallet (requires JWT).
+//
+// An upsert on (wallet, token): a previously-disabled holding is reactivated rather
+// than duplicated. The gateway answers 201 when it creates the holding and 200 when it
+// reactivates or updates one; both return the holding, so this does not distinguish
+// them. `id` may be the wallet UUID or its 0x address.
+func (s *WalletsService) AddToken(ctx context.Context, accountID, id string, req AddWalletTokenRequest) (*WalletTokenHolding, error) {
+	var out WalletTokenHolding
+	if err := s.http.post(ctx, fmt.Sprintf("/accounts/%s/wallets/%s/tokens", accountID, id), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveToken stops accepting a token on this wallet (requires JWT).
+//
+// A soft delete (204): the holding row survives with active:false and loses `default`,
+// so its history is kept and EnableToken can bring it back.
+func (s *WalletsService) RemoveToken(ctx context.Context, accountID, id, tokenID string) error {
+	return s.http.delete(ctx, fmt.Sprintf("/accounts/%s/wallets/%s/tokens/%s", accountID, id, tokenID), nil)
+}
+
+// EnableToken re-enables an EXISTING holding (requires JWT). 404 when the wallet has
+// none for that token — use AddToken to create one.
+func (s *WalletsService) EnableToken(ctx context.Context, accountID, id, tokenID string) (*WalletTokenHolding, error) {
+	return s.tokenAction(ctx, accountID, id, tokenID, "enable")
+}
+
+// DisableToken disables an EXISTING holding (requires JWT). Same effect as
+// RemoveToken, but returns the holding rather than 204. 404 when absent.
+func (s *WalletsService) DisableToken(ctx context.Context, accountID, id, tokenID string) (*WalletTokenHolding, error) {
+	return s.tokenAction(ctx, accountID, id, tokenID, "disable")
+}
+
+// tokenAction is the shared shape of the two PATCH sub-actions — same path, same
+// response, different verb in the URL. Mirrors WebhooksService.putAction, which exists
+// for the same reason.
+func (s *WalletsService) tokenAction(ctx context.Context, accountID, id, tokenID, action string) (*WalletTokenHolding, error) {
+	var out WalletTokenHolding
+	path := fmt.Sprintf("/accounts/%s/wallets/%s/tokens/%s/%s", accountID, id, tokenID, action)
+	if err := s.http.patch(ctx, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // WalletBalancesParams holds optional query parameters for WalletsService.Balances.
 type WalletBalancesParams struct {
 	ChainID     int    // restrict to one chain id; 0 = all configured chains

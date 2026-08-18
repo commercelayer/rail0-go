@@ -183,6 +183,23 @@ client.Wallets.Update(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Ma
 // Delete a wallet
 client.Wallets.Delete(ctx, accountID, w.ID)
 
+// What the wallet ACCEPTS — this is what drives the public /payment_methods and
+// gates payment creation: a wallet with no active holding is invisible to buyers
+// and unusable as a payee. AddToken is an upsert on (wallet, token), so a
+// previously-disabled holding is reactivated rather than duplicated.
+isDefault := true
+holding, _ := client.Wallets.AddToken(ctx, accountID, w.ID, rail0.AddWalletTokenRequest{
+    ChainID: 84532,
+    Token:   "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    Default: &isDefault, // at most one default per wallet; setting it clears the others
+})
+
+// The handle for the three calls below is the TOKEN's UUID (holding.TokenID),
+// not an id of the holding row — the gateway looks the holding up by (wallet, token).
+client.Wallets.DisableToken(ctx, accountID, w.ID, holding.TokenID) // returns the holding
+client.Wallets.EnableToken(ctx, accountID, w.ID, holding.TokenID)  // 404 if none exists
+client.Wallets.RemoveToken(ctx, accountID, w.ID, holding.TokenID)  // soft delete, 204
+
 // Read a wallet's live on-chain balances (one entry per chain; each carries the
 // native balance and active token balances, or a per-chain Error if that RPC was
 // unreachable). Filters are optional.

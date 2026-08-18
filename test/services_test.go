@@ -696,3 +696,123 @@ func TestCloseDisputeSubmitByHash_PostsToCloseSubmitted(t *testing.T) {
 		t.Errorf("path: got %s", mt.recorded[0].URL.Path)
 	}
 }
+
+// ── Wallet token management (#33) ────────────────────────────────────────────
+//
+// What a wallet ACCEPTS is what drives the public GET /payment_methods and gates
+// payment creation, so these four are not conveniences: without them a Go integration
+// could create a wallet and then had to leave the SDK to make it usable as a payee.
+// rail0-ts and rail0-ruby have had them all along.
+//
+// The assertions are on method + path + body, because that is the whole surface — a
+// wrong verb or a `token_id` sent as the holding's id rather than the token's fails at
+// the gateway as a 404 or a 405, which is exactly the class of mistake a mock transport
+// catches and a live call reports too late.
+
+func TestWallets_AddToken_PostsThePair(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(201, map[string]any{
+		"token_id": "tok_1", "active": true, "default": true,
+	}))
+	client := newMockClient(t, mt)
+
+	isDefault := true
+	holding, err := client.Wallets.AddToken(context.Background(), "acc_1", "w_1", rail0.AddWalletTokenRequest{
+		ChainID: 84532,
+		Token:   "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+		Default: &isDefault,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holding.TokenID != "tok_1" || !holding.Default {
+		t.Errorf("holding: got %+v", holding)
+	}
+
+	req := mt.recorded[0]
+	if req.Method != http.MethodPost {
+		t.Errorf("method: got %s, want POST", req.Method)
+	}
+	if req.URL.Path != "/accounts/acc_1/wallets/w_1/tokens" {
+		t.Errorf("path: got %s", req.URL.Path)
+	}
+	body, _ := io.ReadAll(req.Body)
+	var sent map[string]any
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["chain_id"] != float64(84532) {
+		t.Errorf("chain_id: got %v", sent["chain_id"])
+	}
+	if sent["default"] != true {
+		t.Errorf("default must be sent when set: got %v", sent["default"])
+	}
+}
+
+func TestWallets_AddToken_OmitsDefaultWhenUnset(t *testing.T) {
+	// Default is a pointer so `false` can be sent explicitly; unset must not appear at
+	// all, or every AddToken would silently clear the wallet's default token.
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(200, map[string]any{"token_id": "tok_1", "active": true}))
+	client := newMockClient(t, mt)
+
+	if _, err := client.Wallets.AddToken(context.Background(), "acc_1", "w_1", rail0.AddWalletTokenRequest{
+		ChainID: 84532, Token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(mt.recorded[0].Body)
+	if strings.Contains(string(body), "default") {
+		t.Errorf("unset Default must be omitted, got body: %s", body)
+	}
+}
+
+func TestWallets_RemoveToken_DeletesByTokenID(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(204, nil))
+	client := newMockClient(t, mt)
+
+	if err := client.Wallets.RemoveToken(context.Background(), "acc_1", "w_1", "tok_1"); err != nil {
+		t.Fatal(err)
+	}
+	req := mt.recorded[0]
+	if req.Method != http.MethodDelete {
+		t.Errorf("method: got %s, want DELETE", req.Method)
+	}
+	if req.URL.Path != "/accounts/acc_1/wallets/w_1/tokens/tok_1" {
+		t.Errorf("path: got %s", req.URL.Path)
+	}
+}
+
+func TestWallets_EnableAndDisableToken_PatchTheirSubAction(t *testing.T) {
+	for _, tc := range []struct {
+		action string
+		call   func(c *rail0.Client) (*rail0.WalletTokenHolding, error)
+	}{
+		{"enable", func(c *rail0.Client) (*rail0.WalletTokenHolding, error) {
+			return c.Wallets.EnableToken(context.Background(), "acc_1", "w_1", "tok_1")
+		}},
+		{"disable", func(c *rail0.Client) (*rail0.WalletTokenHolding, error) {
+			return c.Wallets.DisableToken(context.Background(), "acc_1", "w_1", "tok_1")
+		}},
+	} {
+		mt := &mockTransport{t: t}
+		mt.push(jsonResp(200, map[string]any{"token_id": "tok_1", "active": tc.action == "enable"}))
+		client := newMockClient(t, mt)
+
+		holding, err := tc.call(client)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.action, err)
+		}
+		if holding.Active != (tc.action == "enable") {
+			t.Errorf("%s: active got %v", tc.action, holding.Active)
+		}
+		req := mt.recorded[0]
+		if req.Method != http.MethodPatch {
+			t.Errorf("%s method: got %s, want PATCH", tc.action, req.Method)
+		}
+		if want := "/accounts/acc_1/wallets/w_1/tokens/tok_1/" + tc.action; req.URL.Path != want {
+			t.Errorf("%s path: got %s, want %s", tc.action, req.URL.Path, want)
+		}
+	}
+}
