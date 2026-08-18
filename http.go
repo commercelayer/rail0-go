@@ -86,25 +86,42 @@ type ClientOptions struct {
 	// RetryDelay is the base delay between retries; doubles each attempt (exponential backoff).
 	// Default: 200ms.
 	RetryDelay time.Duration
-	// RetryOn429 opts in to retrying a 429 Too Many Requests response, sleeping for the
-	// server's Retry-After header (falling back to the exponential backoff when the header
-	// is absent) instead of the immediate backoff used for network errors. It draws on the
-	// same MaxRetries budget, so set MaxRetries > 0 for it to take effect. Default: false.
+	// RetryOn429 opts in to retrying a 429 Too Many Requests response, waiting the
+	// server's Retry-After (clamped by RetryAfterCap, plus jitter) and falling back to the
+	// exponential backoff when the header is absent. Default: false.
+	//
+	// It does NOT need MaxRetries set as well. It used to — "set MaxRetries > 0 for it to
+	// take effect" — which made the flag a silent no-op for anyone who set only this one,
+	// since maxAttempts is MaxRetries+1 and the zero value gives a single attempt. On its
+	// own it now allows one retry; with MaxRetries it uses that budget.
+	//
+	// A 429 is the only HTTP status retried, on any method including POST, and the reason
+	// is not that it is common: the gateway rejects it in middleware, BEFORE the request
+	// reaches the application, so nothing ran and nothing can run twice. That is not true
+	// of a 502 or a timeout on a capture, where the broadcast may already be in flight.
 	RetryOn429 bool
+	// RetryAfterCap bounds how long a single Retry-After may park a request.
+	// Default: DefaultRetryAfterCap (60s).
+	//
+	// A gateway older than rail0-gateway#201 sends its whole throttle period rather than
+	// the time left in the window, so a limit hit one second in asks for the full 60. This
+	// bounds that over-wait, and any hostile value from anything in between.
+	RetryAfterCap time.Duration
 	// Transport overrides the HTTP transport. When nil, http.DefaultTransport is used.
 	// Useful for testing or for custom TLS/proxy configuration.
 	Transport http.RoundTripper
 }
 
 type httpClient struct {
-	baseURL    string
-	headers    map[string]string
-	timeout    time.Duration
-	logger     Logger
-	maxRetries int
-	retryDelay time.Duration
-	retryOn429 bool
-	http       *http.Client
+	baseURL       string
+	headers       map[string]string
+	timeout       time.Duration
+	logger        Logger
+	maxRetries    int
+	retryDelay    time.Duration
+	retryOn429    bool
+	retryAfterCap time.Duration
+	http          *http.Client
 
 	// mu guards token, which may be mutated after construction (SetToken, or the
 	// automatic stash by Auth.Login/Verify) while requests read it concurrently.
@@ -135,20 +152,25 @@ func newHTTPClient(opts ClientOptions) *httpClient {
 	if retryDelay == 0 {
 		retryDelay = 200 * time.Millisecond
 	}
+	retryAfterCap := opts.RetryAfterCap
+	if retryAfterCap <= 0 {
+		retryAfterCap = DefaultRetryAfterCap
+	}
 	headers := map[string]string{"Content-Type": "application/json"}
 	for k, v := range opts.Headers {
 		headers[k] = v
 	}
 	return &httpClient{
-		baseURL:    strings.TrimRight(opts.BaseURL, "/"),
-		headers:    headers,
-		timeout:    timeout,
-		logger:     opts.Logger,
-		maxRetries: opts.MaxRetries,
-		retryDelay: retryDelay,
-		retryOn429: opts.RetryOn429,
-		http:       &http.Client{Transport: opts.Transport},
-		token:      opts.Token,
+		baseURL:       strings.TrimRight(opts.BaseURL, "/"),
+		headers:       headers,
+		timeout:       timeout,
+		logger:        opts.Logger,
+		maxRetries:    opts.MaxRetries,
+		retryDelay:    retryDelay,
+		retryOn429:    opts.RetryOn429,
+		retryAfterCap: retryAfterCap,
+		http:          &http.Client{Transport: opts.Transport},
+		token:         opts.Token,
 	}
 }
 
@@ -196,8 +218,14 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any, out 
 // client's default headers for this single request only.
 func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extraHeaders map[string]string, respHeader *http.Header) error {
 	url := c.baseURL + path
-	maxAttempts := c.maxRetries + 1
-	trackAttempts := c.maxRetries > 0
+	// A retry budget of at least 1 when RetryOn429 is on, so the flag works on its own:
+	// requiring MaxRetries as well made it a silent no-op (see RetryOn429).
+	retryBudget := c.maxRetries
+	if c.retryOn429 && retryBudget < 1 {
+		retryBudget = 1
+	}
+	maxAttempts := retryBudget + 1
+	trackAttempts := retryBudget > 0
 	// override carries the delay to wait before the NEXT attempt; < 0 means "use the
 	// exponential backoff". A retried 429 sets it to its Retry-After so we honour the
 	// server's pacing instead of the immediate network-error backoff.
@@ -205,10 +233,11 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			delay := override
-			if delay < 0 {
-				delay = c.retryDelay * time.Duration(1<<uint(attempt-2))
-			}
+			// A network error carries no instruction, so it takes the jittered exponential
+			// path; a 429 sets override to its Retry-After. Both go through throttleDelay,
+			// which is what applies the cap and the jitter — see backoff.go for why the
+			// jitter is additive on the server's number and multiplicative on ours.
+			delay := throttleDelay(override, c.retryDelay, c.retryAfterCap, attempt-1, -1)
 			override = -1
 			select {
 			case <-time.After(delay):

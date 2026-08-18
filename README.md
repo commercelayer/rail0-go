@@ -504,15 +504,45 @@ client := rail0.NewClient(rail0.ClientOptions{
     Timeout:    30 * time.Second,
     MaxRetries: 3,
     RetryDelay: 200 * time.Millisecond,
-    RetryOn429: true, // retry 429s, sleeping for Retry-After (uses the MaxRetries budget)
-    Logger:     rail0.DebugLogger,
+    RetryOn429:    true,            // retry 429s, waiting the server's Retry-After
+    RetryAfterCap: 60 * time.Second, // longest Retry-After to honour (default 60s)
+    Logger:        rail0.DebugLogger,
 })
 ```
 
 Network errors and timeouts are retried up to `MaxRetries` with exponential backoff.
-HTTP errors are **not** retried by default; opt in to rate-limit retries with
-`RetryOn429`, which draws on the same `MaxRetries` budget and waits for the server's
-`Retry-After` (falling back to the backoff when the header is absent).
+HTTP errors are **not** retried by default.
+
+### Rate limits
+
+The gateway throttles the public surface **per IP** (100 requests / 60s by default) and
+everything authenticated **per session**, keyed on the JWT subject (300 / 60s). Over budget
+it answers `429` with `code: "rate_limited"`, a `Retry-After`, and — since
+rail0-gateway#201 — `RateLimit-Limit`/`-Remaining`/`-Reset` on *every* response, so a
+client with work to pace can slow down instead of discovering the wall.
+
+`APIError.RetryAfter` carries the header. Read it when you handle the error yourself, or
+set `RetryOn429` and let the client wait:
+
+- **`RetryOn429` works on its own.** It used to need `MaxRetries > 0` as well, which made
+  it a silent no-op for anyone who set only this flag (`maxAttempts` is `MaxRetries+1`, and
+  the zero value gives one attempt). On its own it now allows one retry; with `MaxRetries`
+  it uses that budget.
+- **`Retry-After` is clamped** by `RetryAfterCap` (60s default): a gateway older than
+  rail0-gateway#201 sends its whole throttle period rather than the time left in the
+  window, so a limit hit one second in would otherwise park the request for the full 60.
+- **The wait is jittered**, and never shortened below what it is for: additive on a
+  server-instructed wait (scaling a `Retry-After` down means retrying before the window it
+  named has passed), equal jitter — half fixed, half random — on a guessed one. Jitter
+  matters because callers align: rail0-admin proxies every merchant over ONE session, so
+  they share the bucket, are told the same number, and would otherwise wake together.
+- **A 429 is the only status retried**, on any method including `POST`, because the gateway
+  rejects it in middleware *before* the request reaches the application: nothing ran, so
+  nothing can run twice. That is not true of a 502 or a timeout on a capture, where the
+  broadcast may already be in flight.
+
+The wait also respects the context: a cancelled `ctx` ends the request rather than sleeping
+it out.
 
 ## Error handling
 
