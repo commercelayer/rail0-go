@@ -412,11 +412,21 @@ buckets, _ := client.Analytics.Timeseries(ctx, rail0.TimeseriesParams{
 })
 
 // Aggregate orders by a dimension (By is required): "token" | "chain" | "mode" |
-// "status". token/chain rows carry Token/ChainID/Decimals/Volume; mode/status rows
-// are counts only (those fields are nil). Row.Key is the dimension value.
+// "status" | "operation". token/chain rows carry Token/ChainID/Decimals/Volume;
+// mode/status rows are counts only (those fields are nil). Row.Key is the dimension
+// value.
 rows, _ := client.Analytics.Breakdown(ctx, rail0.BreakdownParams{By: "token"})
 for _, r := range rows {
     fmt.Println(r.Key, r.Orders) // r.Key is a string (or an int chain id fallback)
+}
+
+// "operation" is the one dimension that groups the merchant's own CONFIRMED
+// transactions rather than payments, so it reports both counts: Transactions is how
+// often the operation ran — a partial capture runs several times on one order — and
+// Orders is how many orders it touched.
+ops, _ := client.Analytics.Breakdown(ctx, rail0.BreakdownParams{By: "operation"})
+for _, r := range ops {
+    fmt.Println(r.Key, *r.Transactions, r.Orders) // e.g. capture 2 1
 }
 ```
 
