@@ -12,6 +12,8 @@ type Client struct {
 	// stash a JWT that then applies to all services at once.
 	http *httpClient
 	// Wallets exposes account wallet management under /accounts/:id/wallets (JWT).
+	Accounts *AccountsService
+
 	Wallets *WalletsService
 	// PaymentMethods exposes the public GET /payment_methods discovery (no JWT).
 	PaymentMethods *PaymentMethodsService
@@ -38,6 +40,7 @@ func NewClient(opts ClientOptions) *Client {
 	h := newHTTPClient(opts)
 	return &Client{
 		http:           h,
+		Accounts:       &AccountsService{http: h},
 		Wallets:        &WalletsService{http: h},
 		PaymentMethods: &PaymentMethodsService{http: h},
 		Auth:           &AuthService{http: h},

@@ -74,6 +74,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Wallets` | Wallet management under `/accounts/:id/wallets` (JWT) |
 | `client.PaymentMethods` | Public discovery of a merchant's accepted wallets/tokens (`GET /payment_methods`, no JWT) |
 | `client.Payments` | Full payment lifecycle |
+| `client.Accounts` | The merchant account's own profile (JWT) |
 | `client.Analytics` | Merchant sales analytics (JWT + account) |
 | `client.Webhooks` | Webhook subscription management (JWT) |
 
@@ -338,6 +339,17 @@ all, _ := client.Disputes.List(ctx, rail0.ListDisputesParams{Status: "closed"})
 for _, d := range all.Data {
     _ = d.Payment.Rail0Id // embedded payment
 }
+```
+
+## Account (JWT)
+
+```go
+// The caller's OWN profile. The gateway's /accounts/{id} is behind an ownership
+// guard (a JWT whose account matches the path), so there is no way to read
+// another merchant's account here — and an id that is not an account answers 404
+// exactly as another account's id does, so the pair says nothing about existence.
+me, _ := client.Accounts.Get(ctx, accountID)
+fmt.Println(me.Name, me.Email)
 ```
 
 ## Analytics (JWT + account)
