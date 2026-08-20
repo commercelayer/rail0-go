@@ -381,6 +381,18 @@ for _, v := range sum.Volume {
 // currencies. Wasted is gas an on-chain revert burned.
 for _, g := range sum.Gas {
     fmt.Println(*g.ChainName, g.Spent, g.Wasted, *g.Symbol) // Decimals is always 18
+    // Mean broadcast→confirmation for that chain; nil when none confirmed (not 0, which
+    // would read as instant).
+    if g.ConfirmationSecs != nil {
+        fmt.Println("confirms in", *g.ConfirmationSecs, "s")
+    }
+}
+
+// Why the failures failed, commonest first. FailedRate says how much fails; this says
+// what to act on — a revert is a state problem, a rejection that never reached the chain
+// is a wallet problem.
+for _, f := range sum.Failures {
+    fmt.Println(f.Code, f.Transactions)
 }
 
 // The same gas regrouped: by payment status, and by the operation that paid it.

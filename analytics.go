@@ -66,8 +66,10 @@ type TimeseriesParams struct {
 // BreakdownParams are the Breakdown filters plus the required grouping dimension.
 type BreakdownParams struct {
 	AnalyticsFilters
-	// By is the dimension to group by: "token", "chain", "mode", or "status".
-	// token/chain rows carry volume; mode/status rows are counts only. Required.
+	// By is the dimension to group by: "token", "chain", "mode", "status" or
+	// "operation". token/chain rows carry volume; mode/status rows are counts only;
+	// "operation" groups the merchant's own CONFIRMED transactions and carries
+	// Transactions beside Orders. Required.
 	By string
 }
 
@@ -121,6 +123,22 @@ type AnalyticsGas struct {
 	Wasted    string  `json:"wasted"`
 	Confirmed int     `json:"confirmed"`
 	Failed    int     `json:"failed"`
+	// ConfirmationSecs is the mean time from broadcast to on-chain confirmation for this
+	// chain's confirmed transactions, weighted by their count. Nil when none confirmed —
+	// not zero, which would read as instant. Per chain, because a chain that wants 60
+	// confirmations and one that wants 4 are not comparable.
+	ConfirmationSecs *int `json:"confirmation_secs"`
+}
+
+// AnalyticsFailure is one decoded failure code and how many of the merchant's transactions
+// hit it, commonest first. FailedRate says how much fails; this says what to act on — a
+// revert is a state problem (an amount above the residual, a closed window) while a
+// rejection that never reached the chain is a wallet problem (no gas money, a used nonce).
+// Code is the same catalogue an error body uses, or "unknown" when the raw reason decodes
+// to nothing.
+type AnalyticsFailure struct {
+	Code         string `json:"code"`
+	Transactions int    `json:"transactions"`
 }
 
 // AnalyticsGasSlice is one slice of a chain's gas: the same fields as AnalyticsGas plus the
@@ -150,6 +168,7 @@ type AnalyticsSummary struct {
 	DisputeRate    float64             `json:"dispute_rate"`
 	FailedRate     float64             `json:"failed_rate"`
 	ByStatus       map[string]int      `json:"by_status"`
+	Failures       []AnalyticsFailure  `json:"failures"`
 	Volume         []AnalyticsVolume   `json:"volume"`
 	Gas            []AnalyticsGas      `json:"gas"`
 	GasByStatus    []AnalyticsGasSlice `json:"gas_by_status"`
@@ -175,6 +194,10 @@ type AnalyticsRow struct {
 	ChainID  *int    `json:"chain_id"`
 	Decimals *int    `json:"decimals"`
 	Volume   *string `json:"volume"`
+	// Transactions is set on "operation" rows only: how often the operation RAN, which is
+	// not Orders — a partial capture runs several times on one order. Nil on every other
+	// dimension.
+	Transactions *int `json:"transactions"`
 }
 
 // Summary returns the account's headline sales KPIs (GET /analytics/summary).
@@ -207,7 +230,7 @@ func (s *AnalyticsService) Timeseries(ctx context.Context, params TimeseriesPara
 }
 
 // Breakdown returns the account's orders aggregated by params.By
-// (GET /analytics/breakdown). By is required (one of token/chain/mode/status).
+// (GET /analytics/breakdown). By is required (token/chain/mode/status/operation).
 func (s *AnalyticsService) Breakdown(ctx context.Context, params BreakdownParams) ([]AnalyticsRow, error) {
 	q := url.Values{}
 	params.AnalyticsFilters.apply(q)

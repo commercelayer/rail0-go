@@ -13,13 +13,15 @@ func TestAnalyticsSummaryDecodesGasAndItsSlices(t *testing.T) {
 	const body = `{
 	  "orders": 3, "disputed": 1, "refund_rate": 0.3333, "dispute_rate": 0.3333,
 	  "failed_rate": 0.25,
+	  "failures": [{"code": "insufficient_gas_funds", "transactions": 2},
+	               {"code": "nonce_too_low", "transactions": 1}],
 	  "by_status": {"captured": 2, "refunded": 1},
 	  "volume": [{"chain_id": 8453, "token": "0xtok", "symbol": "USDC", "decimals": 6,
 	              "orders": 3, "gross": "3000000", "settled": "2000000",
 	              "escrowed": "0", "captured": "3000000", "refunded": "1000000"}],
 	  "gas": [{"chain_id": 8453, "chain_name": "Base", "symbol": "ETH", "decimals": 18,
 	           "orders": 3, "spent": "72000", "wasted": "10000",
-	           "confirmed": 3, "failed": 1}],
+	           "confirmed": 3, "failed": 1, "confirmation_secs": 15}],
 	  "gas_by_status": [
 	    {"chain_id": 8453, "key": "captured", "orders": 2, "spent": "62000", "wasted": "0",
 	     "confirmed": 2, "failed": 0},
@@ -49,6 +51,15 @@ func TestAnalyticsSummaryDecodesGasAndItsSlices(t *testing.T) {
 	}
 	if len(sum.Gas) != 1 || sum.Gas[0].Spent != "72000" || *sum.Gas[0].Symbol != "ETH" {
 		t.Fatalf("gas row not decoded: %+v", sum.Gas)
+	}
+	// Per chain, and a pointer so "none confirmed" is nil rather than 0 — 0 reads as instant.
+	if sum.Gas[0].ConfirmationSecs == nil || *sum.Gas[0].ConfirmationSecs != 15 {
+		t.Errorf("ConfirmationSecs = %v, want 15", sum.Gas[0].ConfirmationSecs)
+	}
+	// failed_rate says how much fails; failures says what to act on, commonest first.
+	if len(sum.Failures) != 2 || sum.Failures[0].Code != "insufficient_gas_funds" ||
+		sum.Failures[0].Transactions != 2 {
+		t.Errorf("failures not decoded: %+v", sum.Failures)
 	}
 	if sum.Gas[0].Orders == nil || *sum.Gas[0].Orders != 3 {
 		t.Errorf("per-chain Orders = %v, want 3", sum.Gas[0].Orders)
