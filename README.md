@@ -352,14 +352,31 @@ Amounts are token base-unit integer strings and are only summed **within** a sin
 comes with its `Decimals` for display.
 
 ```go
-// Headline KPIs: order/dispute counts, refund & dispute rates, by-status counts,
-// and per-(token, chain) gross/captured/refunded volume. All filters optional.
+// Headline KPIs: order/dispute counts, refund/dispute/failed rates, by-status counts,
+// per-(token, chain) volume and per-chain gas. All filters optional.
 sum, _ := client.Analytics.Summary(ctx, rail0.AnalyticsFilters{
     Mode: "charge", From: "2026-01-01T00:00:00Z", To: "2026-02-01T00:00:00Z",
 })
 fmt.Println(sum.Orders, sum.RefundRate, sum.ByStatus["captured"])
 for _, v := range sum.Volume {
-    fmt.Println(v.Symbol, v.Gross, v.Captured) // format v.Gross with *v.Decimals
+    // Settled/Escrowed say where the money is now (mirrored on-chain residuals);
+    // Captured/Refunded say what happened (confirmed transactions).
+    fmt.Println(v.Symbol, v.Gross, v.Settled, v.Captured) // format with *v.Decimals
+}
+
+// Gas the merchant's own transactions cost, per CHAIN and in that chain's NATIVE
+// token — never summed across chains, since Base ETH and Polygon POL are different
+// currencies. Wasted is gas an on-chain revert burned.
+for _, g := range sum.Gas {
+    fmt.Println(*g.ChainName, g.Spent, g.Wasted, *g.Symbol) // Decimals is always 18
+}
+
+// The same gas regrouped: by payment status, and by the operation that paid it.
+// Each cut adds back up to its chain's row. Orders is the denominator for the
+// average cost of an order, and is nil on the by-operation cut — one order spans
+// several operations. FailedRate is per resolved TRANSACTION, not per order.
+for _, s := range sum.GasByStatus {
+    fmt.Println(s.Key, s.Spent, s.Orders) // e.g. "captured" 62000 2
 }
 
 // Order count per time bucket (oldest first). Per-bucket Volume is non-nil only

@@ -71,10 +71,16 @@ type BreakdownParams struct {
 	By string
 }
 
-// AnalyticsVolume is gross/captured/refunded volume for one (token, chain). The
-// amount fields are token base-unit integer strings (format with Decimals). ChainID,
-// ChainName, Symbol and Decimals are nil when the contract is no longer in the
-// gateway's catalog.
+// AnalyticsVolume is the volume for one (token, chain). The amount fields are token
+// base-unit integer strings (format with Decimals). ChainID, ChainName, Symbol and
+// Decimals are nil when the contract is no longer in the gateway's catalog.
+//
+// Two pairs, answering different questions. Settled/Escrowed say where the money is NOW,
+// from the on-chain residuals the indexer mirrors: Settled is what the payee holds net of
+// refunds, Escrowed what is still held and neither captured nor returned.
+// Captured/Refunded say what HAPPENED, summed from the confirmed transactions. Neither
+// pair substitutes for the other — refundable = captured − refunded is one equation in two
+// unknowns, and void/release zero the capturable without recording how much went back.
 type AnalyticsVolume struct {
 	ChainID   *int    `json:"chain_id"`
 	ChainName *string `json:"chain_name"`
@@ -83,19 +89,71 @@ type AnalyticsVolume struct {
 	Decimals  *int    `json:"decimals"`
 	Orders    int     `json:"orders"`
 	Gross     string  `json:"gross"`
+	Settled   string  `json:"settled"`
+	Escrowed  string  `json:"escrowed"`
 	Captured  string  `json:"captured"`
 	Refunded  string  `json:"refunded"`
 }
 
-// AnalyticsSummary is the headline KPIs. ByStatus maps each payment status to its
-// count; Volume is per (token, chain). RefundRate/DisputeRate are fractions in [0,1].
+// AnalyticsGas is what the merchant's own transactions cost on ONE chain, in that chain's
+// NATIVE token — not the payment token. Spent and Wasted are wei-scale base-unit integer
+// strings and Decimals is always 18, as it is for every EVM native token.
+//
+// Per chain and NEVER summed across chains: Base ETH and Polygon POL are different
+// currencies, the same reason volume is only summed within one token. Wasted is gas an
+// on-chain revert burned — money spent for nothing. A failure the node refused before the
+// chain burns none, so it raises Failed without raising Wasted.
+//
+// Orders is the count of payments behind the figures — the denominator for the average
+// cost of an order. It counts every payment in scope, INCLUDING those that produced no
+// transaction and so cost nothing, since leaving them out would average only the expensive
+// ones. It is nil on the by-operation cut, where one order spans several operations.
+//
+// Covers only the operations the merchant broadcasts: dispute/close_dispute are the
+// buyer's cost on-chain, and release records no sender, so both are excluded.
+type AnalyticsGas struct {
+	ChainID   *int    `json:"chain_id"`
+	ChainName *string `json:"chain_name"`
+	Symbol    *string `json:"symbol"`
+	Decimals  *int    `json:"decimals"`
+	Orders    *int    `json:"orders"`
+	Spent     string  `json:"spent"`
+	Wasted    string  `json:"wasted"`
+	Confirmed int     `json:"confirmed"`
+	Failed    int     `json:"failed"`
+}
+
+// AnalyticsGasSlice is one slice of a chain's gas: the same fields as AnalyticsGas plus the
+// Key naming the slice — a payment status for GasByStatus, an operation for GasByOperation.
+// Both cuts are the same rows regrouped, so a chain's slices always add back up to its
+// AnalyticsGas row.
+//
+// A status slice is a SNAPSHOT: status moves, so an authorize's gas sits under "authorized"
+// until the payment is captured and then under "captured" — the same period's rows change
+// over time. An operation slice never moves.
+type AnalyticsGasSlice struct {
+	AnalyticsGas
+	Key string `json:"key"`
+}
+
+// AnalyticsSummary is the headline KPIs. ByStatus maps each payment status to its count;
+// Volume is per (token, chain); Gas is per chain, in that chain's native token, with
+// GasByStatus and GasByOperation slicing exactly those totals.
+//
+// RefundRate/DisputeRate are fractions in [0,1] per ORDER. FailedRate is per resolved
+// TRANSACTION, not per order: one order can carry several attempts, and a retried capture
+// that eventually confirms is what it exists to surface.
 type AnalyticsSummary struct {
-	Orders      int               `json:"orders"`
-	Disputed    int               `json:"disputed"`
-	RefundRate  float64           `json:"refund_rate"`
-	DisputeRate float64           `json:"dispute_rate"`
-	ByStatus    map[string]int    `json:"by_status"`
-	Volume      []AnalyticsVolume `json:"volume"`
+	Orders         int                 `json:"orders"`
+	Disputed       int                 `json:"disputed"`
+	RefundRate     float64             `json:"refund_rate"`
+	DisputeRate    float64             `json:"dispute_rate"`
+	FailedRate     float64             `json:"failed_rate"`
+	ByStatus       map[string]int      `json:"by_status"`
+	Volume         []AnalyticsVolume   `json:"volume"`
+	Gas            []AnalyticsGas      `json:"gas"`
+	GasByStatus    []AnalyticsGasSlice `json:"gas_by_status"`
+	GasByOperation []AnalyticsGasSlice `json:"gas_by_operation"`
 }
 
 // AnalyticsBucket is one point of the order-count time series. Volume is a base-unit
