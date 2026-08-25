@@ -62,17 +62,20 @@ type DisputeDetail struct {
 // Used internally by the HTTP client to parse non-2xx responses.
 //
 // The gateway sends a code/title/detail triple: `code` is the specific condition,
-// `title` a short label, `detail` a sentence fit to show a user. `status` and
-// `message` are the same values under their older names — `status` carries the wider
-// family (e.g. `forbidden`) where `code` is narrower, `message` equals `detail` — and
-// Grape validation errors put their text in `error`. All of them are parsed so a
-// useful code and text can be surfaced whatever the gateway's age.
+// `title` a short label, `detail` a sentence fit to show a user.
+//
+// Exactly those three, plus whatever context field a route attaches: the gateway trimmed
+// the shape and DELETED the older aliases rather than dual-sending them (`status`, the
+// wider family; `message`, equal to detail; `error`, Grape's validation text) — see
+// rail0-gateway#252. Parsing them was how an older gateway still yielded a useful code;
+// there is no older gateway to serve now, and a field that cannot arrive is a fallback
+// that cannot fire.
+//
+// `reason` stays because it is not an alias: it is a genuine sub-cause one route still
+// attaches (`signing_payload_unavailable` names the RPC failure behind a 502).
 type APIErrorBody struct {
-	Code    string `json:"code"`
-	Title   string `json:"title"`
-	Detail  string `json:"detail"`
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	Error   string `json:"error"`
-	Reason  string `json:"reason"`
+	Code   string `json:"code"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+	Reason string `json:"reason"`
 }

@@ -21,8 +21,11 @@ type APIError struct {
 	Title string
 	// Detail is one or two sentences fit to show a user verbatim.
 	Detail string
-	// Message is Detail under its pre-code/title/detail name; kept so existing
-	// callers keep compiling. Read Detail in new code.
+	// Message is Detail under its pre-code/title/detail name; kept so existing callers
+	// keep compiling, and now ALWAYS equal to Detail — the gateway no longer sends a
+	// separate `message`, so the two cannot diverge. Read Detail in new code.
+	//
+	// Deprecated: use Detail.
 	Message string
 	// Reason is an optional sub-cause the gateway attaches to some errors
 	// (e.g. "rpc_unreachable" on a 502 signing_payload_unavailable); "" if absent.
@@ -81,6 +84,16 @@ var errorHints = map[string]string{
 	"nothing_to_dispute":           "a dispute needs a merchant-held (refundable) balance",
 	"transaction_not_overwritable": "a transaction for this operation is already in flight — wait for it to settle",
 	"signer_mismatch":              "the signing key doesn't match the payment's payer/payee",
+	// The SIWE BINDING failures, split out of signer_mismatch so a failed login says
+	// WHICH part of the proof did not bind (rail0-gateway#216). None of these names the
+	// server's expectation: that endpoint is unauthenticated, so echoing the allow-list
+	// or the expected chain id would turn every hint into a probe.
+	"siwe_domain_not_allowed": "sign with the origin the front-end is served from, and have it added to the gateway's SIWE domain allow-list",
+	"siwe_uri_mismatch":       "the message's uri host must equal its own domain",
+	"siwe_chain_mismatch":     "use the chain id the client library sends — this login is off-chain and nominal",
+	"siwe_proof_expired":      "get a fresh nonce and sign again",
+	// Address-wide, not one token: "sign in again", not "that token is dead".
+	"sessions_revoked":             "every session issued before this address's revoke-all cutoff is refused — sign in again",
 	"config_hash_mismatch":         "the payment record and its on-chain deployment disagree — the payment cannot be operated as recorded",
 	"payment_not_on_chain":         "the contract has no record of this payment — its opening transaction may never have confirmed",
 	"unsupported_contract_version": "the payment's RAIL0 deployment is newer or older than this gateway supports — upgrade the gateway",

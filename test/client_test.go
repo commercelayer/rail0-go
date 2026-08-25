@@ -965,10 +965,15 @@ func TestCreatePayment_404_ReturnsAPIError(t *testing.T) {
 	}
 }
 
-func TestAPIError_SurfacesGatewayStatusAndMessage(t *testing.T) {
+func TestAPIError_SurfacesCodeAndDetail(t *testing.T) {
 	mt := &mockTransport{t: t}
-	// The gateway puts the identifier in `status` and the text in `message`.
-	mt.push(jsonResp(422, map[string]any{"status": "address_not_registered", "message": "Address not associated with any account"}))
+	// Exactly code/title/detail: the gateway deleted the `status` and `message` aliases
+	// rather than dual-sending them (rail0-gateway#252), so this is the whole body.
+	mt.push(jsonResp(422, map[string]any{
+		"code":   "address_not_registered",
+		"title":  "Address not registered",
+		"detail": "Address not associated with any account",
+	}))
 	client := newMockClient(t, mt)
 
 	_, err := client.Payments.CreatePayment(context.Background(), mockCreateReq)
@@ -985,17 +990,26 @@ func TestAPIError_SurfacesGatewayStatusAndMessage(t *testing.T) {
 	}
 }
 
-func TestAPIError_FallsBackToGrapeErrorField(t *testing.T) {
+// What used to be TestAPIError_FallsBackToGrapeErrorField. The `error` field it read is
+// gone from the wire, so the fallback has nothing to fall back to; what still matters is
+// that a body with no text at all does not produce an empty error string.
+func TestAPIError_UsesTheHTTPStatusWhenTheBodyHasNoText(t *testing.T) {
 	mt := &mockTransport{t: t}
-	// Grape validation errors carry the human text in `error`.
-	mt.push(jsonResp(400, map[string]any{"error": "payer is invalid"}))
+	mt.push(jsonResp(400, map[string]any{}))
 	client := newMockClient(t, mt)
 
 	_, err := client.Payments.CreatePayment(context.Background(), mockCreateReq)
 
 	var apiErr *rail0.APIError
-	if !errors.As(err, &apiErr) || apiErr.Message != "payer is invalid" {
-		t.Fatalf("expected message from the `error` field, got %v", err)
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.Detail != "HTTP 400" {
+		t.Errorf("Detail: got %q, want the bare status as a last resort", apiErr.Detail)
+	}
+	if apiErr.Message != apiErr.Detail {
+		t.Errorf("Message must mirror Detail now that the gateway sends only one: %q vs %q",
+			apiErr.Message, apiErr.Detail)
 	}
 }
 

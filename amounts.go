@@ -10,9 +10,15 @@ var amountRe = regexp.MustCompile(`^\d+(\.\d+)?$`)
 
 // ToBaseUnits converts a human decimal amount ("1.50") to its base-unit integer
 // string ("1500000") for the given token decimals, using string math so there is
-// no float rounding. Fractional digits beyond decimals are truncated (not
-// rounded). Returns an error on a malformed amount or negative decimals. Shared
-// with the TS SDK's toBaseUnits so every consumer converts amounts identically.
+// no float rounding. Returns an error on a malformed amount, negative decimals, or
+// MORE fractional digits than the token has. Shared with the TS SDK's toBaseUnits so
+// every consumer converts amounts identically.
+//
+// The over-precision case used to be truncated silently, and that is wrong for the one
+// thing this function is for: the gateway answers 422 on an amount a token cannot
+// express, so dropping the extra digits meant sending a DIFFERENT amount than the caller
+// wrote — and learning about it from a rejected request, or worse from a successful one
+// for less money. Refusing names the mistake at the call site.
 func ToBaseUnits(human string, decimals int) (string, error) {
 	if decimals < 0 {
 		return "", fmt.Errorf("invalid decimals: %d", decimals)
@@ -22,10 +28,10 @@ func ToBaseUnits(human string, decimals int) (string, error) {
 		return "", fmt.Errorf("invalid amount: %q", human)
 	}
 	whole, frac, _ := strings.Cut(s, ".")
-	fracPadded := frac + strings.Repeat("0", decimals)
-	if len(fracPadded) > decimals {
-		fracPadded = fracPadded[:decimals]
+	if len(frac) > decimals {
+		return "", fmt.Errorf("amount %q has %d decimal places, but this token has %d", human, len(frac), decimals)
 	}
+	fracPadded := (frac + strings.Repeat("0", decimals))[:decimals]
 	combined := strings.TrimLeft(whole+fracPadded, "0")
 	if combined == "" {
 		return "0", nil
