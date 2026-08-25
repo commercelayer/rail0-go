@@ -499,18 +499,30 @@ every `Payment`, list rows included, so formatting an amount from
 
 ## Webhooks (JWT)
 
+One subscription covers a **set** of topics: one shared secret, one circuit breaker,
+however many events. The delivery names the event that fired in `X-Rail0-Topic`.
+
 ```go
 // Create — response includes the one-time SharedSecret
 wh, _ := client.Webhooks.Create(ctx, rail0.CreateWebhookRequest{
-    Name: "orders", CallbackURL: "https://example.com/hook", Topic: rail0.TopicPaymentsCaptured,
+    Name:        "orders",
+    CallbackURL: "https://example.com/hook",
+    Topics: []string{
+        rail0.TopicPaymentsAuthorized,
+        rail0.TopicPaymentsCaptured,
+        rail0.TopicPaymentsVoided,
+        rail0.TopicPaymentsRefunded,
+    },
 })
 secret := wh.SharedSecret
 
-// List with filters
+// List with filters — `Topic` asks which subscriptions INCLUDE that event
 active := true
 hooks, _ := client.Webhooks.List(ctx, rail0.ListWebhooksParams{Topic: rail0.TopicPaymentsFailed, Active: &active})
 
-// Lifecycle
+// Lifecycle. Topics REPLACES the set (so it is also how a topic is removed) and never
+// touches the secret. Two subscriptions on one CallbackURL must not overlap — the
+// gateway answers 409 and names the topic that collided.
 client.Webhooks.Update(ctx, wh.ID, rail0.UpdateWebhookRequest{Name: "renamed"})
 client.Webhooks.Disable(ctx, wh.ID)
 client.Webhooks.Enable(ctx, wh.ID)

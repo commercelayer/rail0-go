@@ -19,14 +19,17 @@ type WebhooksService struct {
 
 // Webhook topics. A webhook subscribes to exactly one topic.
 const (
-	TopicPaymentsCreated       = "payments.created"
-	TopicPaymentsSigned        = "payments.signed"
-	TopicPaymentsAuthorized    = "payments.authorized"
-	TopicPaymentsCharged       = "payments.charged"
-	TopicPaymentsCaptured      = "payments.captured"
-	TopicPaymentsVoided        = "payments.voided"
-	TopicPaymentsReleased      = "payments.released"
-	TopicPaymentsRefunded      = "payments.refunded"
+	TopicPaymentsCreated    = "payments.created"
+	TopicPaymentsSigned     = "payments.signed"
+	TopicPaymentsAuthorized = "payments.authorized"
+	TopicPaymentsCharged    = "payments.charged"
+	TopicPaymentsCaptured   = "payments.captured"
+	TopicPaymentsVoided     = "payments.voided"
+	TopicPaymentsReleased   = "payments.released"
+	TopicPaymentsRefunded   = "payments.refunded"
+	// The escrow came back because a never-captured authorization's window lapsed — no
+	// attempt involved, which is why it is its own topic and not a flavour of failed.
+	TopicPaymentsExpired       = "payments.expired"
 	TopicPaymentsFailed        = "payments.failed"
 	TopicPaymentsDisputed      = "payments.disputed"
 	TopicPaymentsDisputeClosed = "payments.dispute_closed"
@@ -98,7 +101,7 @@ func VerifyWebhookSignature(secret, body, timestamp, signature string) bool {
 
 // ListWebhooksParams holds optional query parameters for WebhooksService.List.
 type ListWebhooksParams struct {
-	Topic        string // filter by topic
+	Topic        string // filter to subscriptions that include this topic
 	Active       *bool  // filter by active flag; nil = no filter
 	CircuitState string // filter by circuit state ("closed" or "open")
 	Sort         string // sort fields: comma-separated, prefix with - for desc
@@ -144,10 +147,19 @@ func (s *WebhooksService) List(ctx context.Context, params ...ListWebhooksParams
 }
 
 // CreateWebhookRequest is the body for WebhooksService.Create.
+//
+// One subscription covers a SET of topics, and that is the point: four events on one
+// endpoint used to mean four subscriptions, so four shared secrets to verify against and
+// four rotations to coordinate. Now it is one secret and one circuit breaker.
+//
+// Two subscriptions for the same CallbackURL must not overlap — one holding
+// TopicPaymentsAuthorized and another holding it alongside two more would deliver every
+// authorization twice, signed with two different keys — so the gateway answers 409 and
+// names the topic that collided.
 type CreateWebhookRequest struct {
-	Name        string `json:"name"`
-	CallbackURL string `json:"callback_url"`
-	Topic       string `json:"topic"`
+	Name        string   `json:"name"`
+	CallbackURL string   `json:"callback_url"`
+	Topics      []string `json:"topics"`
 }
 
 // Create registers a new webhook (requires JWT). The response includes the
@@ -170,10 +182,14 @@ func (s *WebhooksService) Get(ctx context.Context, id string) (*Webhook, error) 
 }
 
 // UpdateWebhookRequest holds the fields that can be patched on a webhook.
+//
+// Topics REPLACES the whole set rather than adding to it — which is the only version that
+// can also remove one — so send the union to add and the remainder to drop. The shared
+// secret is untouched: changing what an endpoint receives is not a reason to re-key it.
 type UpdateWebhookRequest struct {
-	Name        string `json:"name,omitempty"`
-	CallbackURL string `json:"callback_url,omitempty"`
-	Topic       string `json:"topic,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	CallbackURL string   `json:"callback_url,omitempty"`
+	Topics      []string `json:"topics,omitempty"`
 }
 
 // Update patches a webhook (requires JWT).
