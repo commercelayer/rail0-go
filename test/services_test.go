@@ -385,7 +385,8 @@ func TestWallets_Balances(t *testing.T) {
 
 func webhookFixture() map[string]any {
 	return map[string]any{
-		"id": "wh_1", "name": "n", "callback_url": "https://x", "topic": "payments.created",
+		"id": "wh_1", "name": "n", "callback_url": "https://x",
+		"topics": []any{"payments.created", "payments.captured"},
 		"active": true, "circuit_state": "closed", "circuit_failure_count": 0,
 		"created_at": "2026-01-01T00:00:00Z",
 	}
@@ -399,7 +400,9 @@ func TestWebhooks_Create_ReturnsSecret(t *testing.T) {
 	client := newMockClient(t, mt)
 
 	res, err := client.Webhooks.Create(context.Background(), rail0.CreateWebhookRequest{
-		Name: "n", CallbackURL: "https://x", Topic: rail0.TopicPaymentsCreated,
+		Name:        "n",
+		CallbackURL: "https://x",
+		Topics:      []string{rail0.TopicPaymentsCreated, rail0.TopicPaymentsCaptured},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -409,6 +412,26 @@ func TestWebhooks_Create_ReturnsSecret(t *testing.T) {
 	}
 	if res.SharedSecret != "whsec_abc" {
 		t.Errorf("shared_secret: got %s", res.SharedSecret)
+	}
+	// The whole point of gateway #231: several topics, ONE secret. Read back as a set,
+	// and sent as one — a body still carrying `topic` would be a different subscription.
+	if len(res.Topics) != 2 || res.Topics[0] != rail0.TopicPaymentsCreated {
+		t.Errorf("topics: got %v", res.Topics)
+	}
+	// The mock clones the request before the body is consumed, so the body is readable.
+	body, err := io.ReadAll(mt.recorded[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sent["topic"]; ok {
+		t.Errorf("body must not carry the deprecated singular: %v", sent)
+	}
+	if got, ok := sent["topics"].([]any); !ok || len(got) != 2 {
+		t.Errorf("topics in body: got %v", sent["topics"])
 	}
 }
 

@@ -138,7 +138,11 @@ var schemaTypeOverride = map[string]map[string]string{
 		"block_number":     "*int",
 	},
 	"Webhook": {
-		"topic": "string",
+		// A SET of topics since gateway #231, and still []string rather than
+		// []WebhookTopic for the same reason the singular was string: standalone enum
+		// schemas are skipped below and surface as the Topic* string constants, so a
+		// named element type would be undefined.
+		"topics": "[]string",
 	},
 	"EventCallback": {
 		"response_code": "*int",
