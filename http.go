@@ -306,13 +306,13 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			var errBody APIErrorBody
 			_ = json.Unmarshal(raw, &errBody)
-			// `code` is the specific condition and is what a caller branches on;
-			// `status` is the wider family the gateway still sends for compatibility,
-			// so it is only a fallback here. Likewise `detail` over `message` (its
-			// legacy alias) and Grape's `error`. The bare HTTP status is used only
+			// `code` is the specific condition and is what a caller branches on, and
+			// it is now the only one there is: the `status`/`message`/`error` aliases
+			// were removed from the wire, so the fallback chain that used to read them
+			// could only ever read absent fields. The bare HTTP status is still used
 			// when the body carries no text at all — never clobbering a real message.
-			code := firstNonEmpty(errBody.Code, errBody.Status)
-			detail := firstNonEmpty(errBody.Detail, errBody.Message, errBody.Error)
+			code := errBody.Code
+			detail := errBody.Detail
 			if code == "" && detail == "" {
 				detail = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			}

@@ -12,7 +12,8 @@ func TestToBaseUnits(t *testing.T) {
 		{"1.5", 6, "1500000", false},
 		{"1", 6, "1000000", false},
 		{"0.000001", 6, "1", false},
-		{"1.2345678", 6, "1234567", false}, // extra fractional digits truncated
+		{"1.234567", 6, "1234567", false}, // exactly `decimals` digits is exact, not over-precise
+		{"1.2345678", 6, "", true},        // one digit too many: refused, never truncated (#26)
 		{"0", 6, "0", false},
 		{"0.0", 6, "0", false},
 		{"10", 0, "10", false},

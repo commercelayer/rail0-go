@@ -490,7 +490,7 @@ b, _ := rail0.ToBaseUnits("1.50", 6) // "1500000" (USDC has 6 decimals)
 rail0.FormatAmount("1500000", 6)      // "1.5"     (trailing zeros trimmed)
 ```
 
-Fractional digits beyond `decimals` are truncated; a malformed amount errors.
+More fractional digits than the token has is an **error**, not a truncation: the gateway 422s an amount a token cannot express, so dropping the extra digits would send a different amount than you wrote. A malformed amount errors too.
 
 Which `decimals` to pass resolves from a payment's `Token` **together with** its
 `ChainID` — a token address identifies a token only within one chain. Both are on
