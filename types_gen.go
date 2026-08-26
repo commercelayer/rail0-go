@@ -39,11 +39,15 @@ type BalanceError struct {
 
 // Blockchain Public blockchain view.
 type Blockchain struct {
-	ChainID      int    `json:"chain_id,omitempty"`
-	ExplorerURL  string `json:"explorer_url,omitempty"`
+	ChainID     int    `json:"chain_id,omitempty"`
+	ExplorerURL string `json:"explorer_url,omitempty"`
+	// The block tag the chain calls settled (`safe`, `finalized`), when it serves one — and what the gateway actually gates on. Null where the chain serves none, in which case required_confirmations is counted.
+	FinalityTag  string `json:"finality_tag,omitempty"`
 	Name         string `json:"name,omitempty"`
 	NativeSymbol string `json:"native_symbol,omitempty"`
 	NetworkType  string `json:"network_type,omitempty"`
+	// Confirmations this gateway waits for before treating a transaction as settled. The FALLBACK rule: where the chain serves a finality tag (see finality_tag) that tag governs instead, so a client showing this number on such a chain is describing a rule that is not in force.
+	RequiredConfirmations int `json:"required_confirmations,omitempty"`
 }
 
 // ChainBalance Balances on one chain. `native`/`tokens` are null when `error` is present; `error` is null on success.
