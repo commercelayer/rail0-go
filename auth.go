@@ -46,6 +46,17 @@ type LogoutResponse struct {
 	Revoked bool `json:"revoked"`
 }
 
+// RevokeAllResponse is the outcome of POST /auth/revoke_all.
+//
+// Cutoff is the instant the gateway recorded, and it is the field worth logging: it
+// says exactly which sessions died. A boolean cannot — every session of the address
+// whose iat precedes this instant is refused from now on, including the ones the
+// caller never saw.
+type RevokeAllResponse struct {
+	Revoked bool   `json:"revoked"`
+	Cutoff  string `json:"cutoff"`
+}
+
 // GetNonce issues a single-use SIWE nonce from the API (POST /auth/nonces).
 func (s *AuthService) GetNonce(ctx context.Context) (*NonceResponse, error) {
 	var out NonceResponse
@@ -86,6 +97,28 @@ func (s *AuthService) Verify(ctx context.Context, req AuthRequest) (*AuthRespons
 func (s *AuthService) Logout(ctx context.Context) (*LogoutResponse, error) {
 	var out LogoutResponse
 	if err := s.http.post(ctx, "/auth/logout", struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	s.http.SetToken("")
+	return &out, nil
+}
+
+// RevokeAll ends EVERY session of the calling address (POST /auth/revoke_all).
+//
+// The answer to a key you no longer trust, and Logout cannot be that answer: Logout is
+// per TOKEN, so an address with five live sessions needs five tokens the caller does not
+// have. This is per ADDRESS and reaches the ones it has never seen — including any an
+// attacker is holding.
+//
+// The gateway records a cutoff INSTANT rather than enumerating tokens, so a session
+// minted a moment before the call is refused by its own iat. That is what makes this
+// durable where a denylist is not.
+//
+// The local token is cleared on success, exactly as Logout does: the client must not keep
+// sending a credential it just had invalidated.
+func (s *AuthService) RevokeAll(ctx context.Context) (*RevokeAllResponse, error) {
+	var out RevokeAllResponse
+	if err := s.http.post(ctx, "/auth/revoke_all", struct{}{}, &out); err != nil {
 		return nil, err
 	}
 	s.http.SetToken("")

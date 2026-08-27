@@ -75,3 +75,56 @@ func TestAuthLogoutSurfacesAFailedRevocation(t *testing.T) {
 		t.Error("Revoked = true, want the gateway's false")
 	}
 }
+
+// RevokeAll is the endpoint for a key you no longer trust, and the two things a wrong
+// implementation gets wrong are both asserted here: it must carry the CUTOFF back (a
+// boolean cannot say which sessions died) and it must clear the local token, exactly as
+// Logout does — a client that keeps sending a credential it just had invalidated is a
+// client that has not revoked anything from its own point of view.
+func TestAuthRevokeAllReturnsTheCutoffAndClearsTheToken(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"revoked": true,
+			"cutoff":  "2026-08-27T21:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt-abc"})
+
+	res, err := c.Auth.RevokeAll(context.Background())
+	if err != nil {
+		t.Fatalf("RevokeAll: %v", err)
+	}
+	if !res.Revoked {
+		t.Error("Revoked = false, want the gateway's true")
+	}
+	if res.Cutoff != "2026-08-27T21:00:00Z" {
+		t.Errorf("Cutoff = %q, want the instant the gateway recorded", res.Cutoff)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/auth/revoke_all" {
+		t.Errorf("called %s %s, want POST /auth/revoke_all", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer jwt-abc" {
+		t.Errorf("Authorization = %q, want the session proving whose address this is", gotAuth)
+	}
+
+	var sentAfter string
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sentAfter = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer srv2.Close()
+	c2 := NewClient(ClientOptions{BaseURL: srv2.URL, Token: "jwt-abc"})
+	if _, err := c2.Auth.RevokeAll(context.Background()); err != nil {
+		t.Fatalf("RevokeAll on srv2: %v", err)
+	}
+	_, _ = c2.Health.Get(context.Background())
+	if sentAfter != "" && sentAfter != "Bearer " {
+		t.Errorf("Authorization after RevokeAll = %q, want it cleared", sentAfter)
+	}
+}

@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"io"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -226,5 +228,35 @@ func TestAuthLoginChainID(t *testing.T) {
 	}
 	if !strings.Contains(authMessage(mt2), "Chain ID: 5042002") {
 		t.Errorf("custom login must embed Chain ID: 5042002, got:\n%s", authMessage(mt2))
+	}
+}
+
+// Redrive addresses the PAYMENT-SCOPED path, and that is the property worth pinning: the
+// gateway resolves the transaction id through the payment, so an id belonging to another
+// payment answers 404 rather than redriving someone else's row. A client that built the
+// path from the transaction id alone would look correct until it retried a stranger's
+// broadcast.
+func TestPaymentsRedriveUsesThePaymentScopedPath(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"tx-1","operation":"capture","status":"pending"}`))
+	}))
+	defer srv.Close()
+
+	c := rail0.NewClient(rail0.ClientOptions{BaseURL: srv.URL, Token: "jwt"})
+	pid := "0x" + strings.Repeat("ab", 32)
+
+	tx, err := c.Payments.Redrive(context.Background(), pid, "tx-1")
+	if err != nil {
+		t.Fatalf("Redrive: %v", err)
+	}
+	if tx.ID != "tx-1" {
+		t.Errorf("ID = %q, want the redriven row", tx.ID)
+	}
+	want := "/payments/" + pid + "/transactions/tx-1/redrive"
+	if gotMethod != http.MethodPost || gotPath != want {
+		t.Errorf("called %s %s, want POST %s", gotMethod, gotPath, want)
 	}
 }

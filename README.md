@@ -28,6 +28,15 @@ session — so revoke before discarding, and before pointing a client at a
 different gateway. Check `Revoked`: `false` means the gateway accepted the request
 but could not record the revocation, and the token is still usable until `exp`.
 
+`Auth.RevokeAll` is the other question, and `Logout` cannot answer it: `Logout` is
+per **token**, so an address with five live sessions needs five tokens you do not
+have. `RevokeAll` is per **address** and reaches the ones you never saw — including
+any an attacker is holding — which makes it the call for a key you no longer trust.
+The gateway records a cutoff **instant** rather than enumerating tokens, so a session
+minted a moment before the call is refused by its own `iat`. `Cutoff` carries that
+instant and is the field worth logging: it says exactly which sessions died, which a
+boolean cannot. The local token is cleared either way.
+
 ```go
 client := rail0.NewClient(rail0.ClientOptions{BaseURL: "https://api.rail0.xyz"})
 ctx := context.Background()
@@ -301,6 +310,12 @@ client.Payments.SubmitByHash(ctx, rail0ID, rail0.OpCapture, rail0.SubmitByHashRe
 
 // Transactions for a payment
 txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{Sort: "-submitted_at"})
+
+// Redrive a broadcast that was prepared and signed but never landed. Offer this on
+// Transaction.Redrivable — the same predicate the gateway guards the route with — and
+// not on `status == "pending"`: a pending row holding no signed transaction is not
+// redrivable, and there the next step is submitting the signature.
+tx, _ := client.Payments.Redrive(ctx, rail0ID, "019f8a3d-…")
 ```
 
 ### Disputes
