@@ -194,6 +194,30 @@ func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, p
 	return &PaginatedResponse[Transaction]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
+// Redrive re-enqueues a stuck broadcast
+// (POST /payments/{id}/transactions/{transaction_id}/redrive).
+//
+// For the one shape a retry can fix: a transaction that is `pending` and whose SIGNED
+// bytes the gateway already holds — prepared and signed, never landed on the chain (a
+// worker that died between the two, a queue drained by hand). Nothing about the payment
+// changes; the same bytes go back to the broadcaster.
+//
+// Transaction.Redrivable is the same predicate the gateway guards the route with, so
+// offer the action on that flag rather than discovering a 422. A `pending` row holding no
+// signed transaction is NOT redrivable: there the next step is submitting the signature,
+// not retrying a send that never happened.
+//
+// The transaction id is resolved THROUGH the payment, so one belonging to another payment
+// answers 404 rather than redriving someone else's row.
+func (s *PaymentsService) Redrive(ctx context.Context, paymentID Bytes32, transactionID string) (*Transaction, error) {
+	var out Transaction
+	path := fmt.Sprintf("/payments/%s/transactions/%s/redrive", paymentID, transactionID)
+	if err := s.http.post(ctx, path, struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Sign deposits the payer's EIP-712 signature (PUT /payments/{id}/sign).
 func (s *PaymentsService) Sign(ctx context.Context, paymentID Bytes32, params PayerSignatureRequest) (*Payment, error) {
 	var out Payment
