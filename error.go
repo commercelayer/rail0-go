@@ -127,8 +127,12 @@ var errorHints = map[string]string{
 	"unknown_token":              "the token isn't configured on this chain",
 	"no_active_contract":         "no active RAIL0 contract on that chain",
 	"missing_param":              "a required parameter is missing from the request",
-	"forbidden":                  "not permitted for this session — on create the payer must be the signed-in address",
-	"payment_already_exists":     "a payment with this id already exists on-chain",
+	// A BARE forbidden is not a party mismatch: the gateway split those into codes of
+	// their own (not_the_payee, not_the_payer, wallet_deactivated, not_your_account)
+	// because they need different fixes. This entry kept describing one of them long
+	// after the split — and the rule it named no longer exists in the gateway at all.
+	"forbidden":              "not permitted for this session — typically the operator grant, a resource owned by another account, or a transaction signed by the wrong wallet",
+	"payment_already_exists": "a payment with this id already exists on-chain",
 }
 
 // firstNonEmpty returns the first argument that isn't the empty string, or "".
