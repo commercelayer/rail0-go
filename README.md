@@ -111,8 +111,8 @@ resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz", 5042002)
 
 // The same SIWE handshake, without logging in, produces a proof-of-ownership of
 // an address for Wallets.Create (see "Wallets" below). ProveAddress fetches a
-// nonce and signs the identical message with the given key, but does NOT touch
-// the client's token:
+// nonce and signs with the given key, but does NOT touch the client's token. The
+// message carries the WALLET-LINK statement, not the login one — see below:
 proof, _ := client.Auth.ProveAddress(ctx, walletKeyBytes, "api.rail0.xyz")
 ```
 
@@ -176,9 +176,9 @@ w, _ := client.Wallets.Get(ctx, accountID, "0xABC…")
 
 // Create a wallet — requires a SIWE proof-of-ownership of the address being
 // added. Build it with Auth.ProveAddress using the KEY OF THAT ADDRESS (the same
-// SIWE handshake as login; it fetches a nonce and signs, but does NOT log the
-// client in). The added address need not equal the session address — a merchant
-// may register several payee wallets — but you must hold each added address's key.
+// handshake as login; it fetches a nonce and signs, but does NOT log the client
+// in). The added address need not equal the session address — a merchant may
+// register several payee wallets — but you must hold each added address's key.
 proof, _ := client.Auth.ProveAddress(ctx, walletKeyBytes, "api.rail0.xyz")
 w, _ := client.Wallets.Create(ctx, accountID, rail0.CreateWalletRequest{
     Address:   "0xABC...",
@@ -186,6 +186,22 @@ w, _ := client.Wallets.Create(ctx, accountID, rail0.CreateWalletRequest{
     Signature: proof.Signature,
     Label:     "Treasury",
 })
+```
+
+**The proof is purpose-bound, and a login proof will not do.** The gateway pins each
+endpoint to one SIWE statement and refuses the other with 422 `siwe_purpose_mismatch`:
+
+| Endpoint | Statement |
+|---|---|
+| `POST /auth` | `Sign in to RAIL0` |
+| `POST /accounts/:id/wallets` | `Add this wallet to your RAIL0 account` |
+
+That is a security boundary rather than a label: a login signature is handed out on
+every sign-in, so a wallet-link endpoint that accepted one would let anyone holding a
+captured login proof bind that address to their **own** account. `Login` and
+`ProveAddress` each pick the right statement; there is nothing to choose at the call site.
+
+```go
 
 // Update a wallet (label / active)
 client.Wallets.Update(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Main"})

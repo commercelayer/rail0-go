@@ -260,3 +260,63 @@ func TestPaymentsRedriveUsesThePaymentScopedPath(t *testing.T) {
 		t.Errorf("called %s %s, want POST %s", gotMethod, gotPath, want)
 	}
 }
+
+// TestSIWEStatementsArePurposeBound pins the one property that separates a login
+// proof from a wallet-link proof: the statement text.
+//
+// The gateway binds each endpoint to exactly one statement
+// (Policy::SIWE_LOGIN_STATEMENT / SIWE_WALLET_LINK_STATEMENT) and answers the
+// other with 422 siwe_purpose_mismatch. ProveAddress used to reuse Login's
+// message verbatim, so `wallets create` was rejected by every gateway carrying
+// the purpose check — and nothing here noticed, because no test had ever
+// asserted the statement. A login signature is handed out on every sign-in; if
+// the wallet-link endpoint accepted one, anyone holding a captured login proof
+// could bind that address to their own account. That is why these two strings
+// must never converge again.
+func TestSIWEStatementsArePurposeBound(t *testing.T) {
+	const (
+		loginStatement      = "Sign in to RAIL0"
+		walletLinkStatement = "Add this wallet to your RAIL0 account"
+	)
+
+	key, err := rail0.HexToPrivateKey(privateKeyHex)
+	if err != nil {
+		t.Fatalf("HexToPrivateKey: %v", err)
+	}
+	nonce := map[string]any{"nonce": "purposeNonce1", "expires_at": "2099-01-01T00:00:00Z"}
+
+	// Login signs the LOGIN statement.
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(201, nonce))
+	mt.push(jsonResp(201, map[string]any{
+		"token": "jwt", "address": payerAddress, "account_id": "acct", "expires_at": "2099-01-02T00:00:00Z",
+	}))
+	if _, err := newMockClient(t, mt).Auth.Login(context.Background(), key, "localhost"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	body, _ := io.ReadAll(mt.recorded[1].Body)
+	var sent struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &sent)
+	if !strings.Contains(sent.Message, loginStatement) {
+		t.Errorf("login message must carry %q, got:\n%s", loginStatement, sent.Message)
+	}
+	if strings.Contains(sent.Message, walletLinkStatement) {
+		t.Errorf("login message must NOT carry the wallet-link statement, got:\n%s", sent.Message)
+	}
+
+	// ProveAddress signs the WALLET-LINK statement.
+	mt2 := &mockTransport{t: t}
+	mt2.push(jsonResp(201, nonce))
+	proof, err := newMockClient(t, mt2).Auth.ProveAddress(context.Background(), key, "localhost")
+	if err != nil {
+		t.Fatalf("ProveAddress: %v", err)
+	}
+	if !strings.Contains(proof.Message, walletLinkStatement) {
+		t.Errorf("wallet proof must carry %q, got:\n%s", walletLinkStatement, proof.Message)
+	}
+	if strings.Contains(proof.Message, loginStatement) {
+		t.Errorf("wallet proof must NOT carry the login statement, got:\n%s", proof.Message)
+	}
+}

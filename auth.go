@@ -142,7 +142,7 @@ func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain strin
 		return nil, fmt.Errorf("rail0: get nonce: %w", err)
 	}
 
-	message, sig, err := signSIWE(privateKey, domain, nonceResp.Nonce, loginChainID(chainID...))
+	message, sig, err := signSIWE(privateKey, domain, nonceResp.Nonce, siweLoginStatement, loginChainID(chainID...))
 	if err != nil {
 		return nil, err
 	}
@@ -161,12 +161,17 @@ type WalletProof struct {
 
 // ProveAddress runs the SIWE proof-of-ownership handshake for the address
 // controlled by privateKey and returns the {message, signature} to hand to
-// WalletsService.Create. It is the exact same handshake as Login — fetch a
-// single-use nonce, build the identical EIP-4361 message, sign it with
-// EIP-191 personal_sign — but stops short of POST /auth: it does NOT authenticate
-// the client, because adding a wallet proves control of the ADDED address while
-// the request itself is authorized by the caller's existing session (the two
-// addresses may differ, e.g. a merchant registering several payee wallets).
+// WalletsService.Create. It is the same handshake as Login — fetch a single-use
+// nonce, build an EIP-4361 message, sign it with EIP-191 personal_sign — but
+// stops short of POST /auth: it does NOT authenticate the client, because adding
+// a wallet proves control of the ADDED address while the request itself is
+// authorized by the caller's existing session (the two addresses may differ,
+// e.g. a merchant registering several payee wallets).
+//
+// The message carries the WALLET-LINK statement, not the login one. This used to
+// reuse Login's message verbatim, which the gateway now refuses with 422
+// siwe_purpose_mismatch: a login proof is issued on every sign-in, so accepting
+// it here would let anyone holding one bind that address to their own account.
 //
 // privateKey must be the 32-byte key OF the address being added. domain/chainID
 // carry the same meaning and defaults as Login (the gateway host and, default 1,
@@ -177,7 +182,7 @@ func (s *AuthService) ProveAddress(ctx context.Context, privateKey []byte, domai
 		return nil, fmt.Errorf("rail0: get nonce: %w", err)
 	}
 
-	message, sig, err := signSIWE(privateKey, domain, nonceResp.Nonce, loginChainID(chainID...))
+	message, sig, err := signSIWE(privateKey, domain, nonceResp.Nonce, siweWalletLinkStatement, loginChainID(chainID...))
 	if err != nil {
 		return nil, err
 	}
@@ -194,14 +199,28 @@ func loginChainID(chainID ...int) int {
 	return 1
 }
 
+// SIWE statements, one per PURPOSE. The gateway binds each endpoint to exactly
+// one of these (Policy::SIWE_LOGIN_STATEMENT / SIWE_WALLET_LINK_STATEMENT) and
+// rejects the other with 422 siwe_purpose_mismatch.
+//
+// They are not interchangeable and must not be collapsed back into one. A login
+// signature is handed out on every sign-in; if the wallet-link endpoint also
+// accepted it, anyone holding one captured login proof could bind that address
+// to THEIR account. The distinct statement is what makes a proof spendable at
+// exactly one endpoint.
+const (
+	siweLoginStatement      = "Sign in to RAIL0"
+	siweWalletLinkStatement = "Add this wallet to your RAIL0 account"
+)
+
 // signSIWE builds an EIP-4361 message for the address controlled by privateKey
-// (domain, uri "https://"+domain, the given single-use nonce, the given chainId,
-// statement "Sign in to RAIL0") and signs it with EIP-191 personal_sign. It is
-// the shared core of the SIWE handshake: Login uses it to prove the session
-// address, ProveAddress to prove a wallet being added — so both produce a byte-
-// identical message shape and the gateway verifies them the same way. Returns
-// the message text and its 0x-prefixed signature.
-func signSIWE(privateKey []byte, domain, nonce string, chainID int) (message, signature string, err error) {
+// (domain, uri "https://"+domain, the given single-use nonce, the given chainId
+// and the given purpose statement) and signs it with EIP-191 personal_sign. It
+// is the shared core of the SIWE handshake: Login uses it to prove the session
+// address, ProveAddress to prove a wallet being added. Everything but the
+// statement is identical between the two. Returns the message text and its
+// 0x-prefixed signature.
+func signSIWE(privateKey []byte, domain, nonce, statement string, chainID int) (message, signature string, err error) {
 	address, err := privateKeyToEthAddress(privateKey)
 	if err != nil {
 		return "", "", fmt.Errorf("rail0: derive address: %w", err)
@@ -209,7 +228,7 @@ func signSIWE(privateKey []byte, domain, nonce string, chainID int) (message, si
 
 	msg, err := siwe.InitMessage(domain, address, "https://"+domain, nonce, map[string]interface{}{
 		"chainId":   chainID,
-		"statement": "Sign in to RAIL0",
+		"statement": statement,
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("rail0: build SIWE message: %w", err)
