@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 )
 
@@ -113,10 +114,38 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 func pageMetaFromHeaders(h http.Header) PageMeta {
 	atoi := func(s string) int { n, _ := strconv.Atoi(s); return n }
 	return PageMeta{
-		Page:    atoi(h.Get("X-Page")),
-		PerPage: atoi(h.Get("X-Per-Page")),
-		Total:   atoi(h.Get("X-Total-Count")),
+		Page:       atoi(h.Get("X-Page")),
+		PerPage:    atoi(h.Get("X-Per-Page")),
+		Total:      atoi(h.Get("X-Total-Count")),
+		TotalPages: atoi(h.Get("X-Total-Pages")),
+		Links:      parseLinkHeader(h.Get("Link")),
 	}
+}
+
+// linkRelRe matches one RFC 8288 link-value: <uri>; rel="name".
+var linkRelRe = regexp.MustCompile(`<([^>]+)>\s*;\s*rel="([^"]+)"`)
+
+// parseLinkHeader turns the Link header into PageLinks. An absent header yields the
+// zero value, which is what an empty collection means: the gateway omits the header
+// rather than sending one that points nowhere.
+func parseLinkHeader(raw string) PageLinks {
+	var out PageLinks
+	if raw == "" {
+		return out
+	}
+	for _, m := range linkRelRe.FindAllStringSubmatch(raw, -1) {
+		switch m[2] {
+		case "first":
+			out.First = m[1]
+		case "prev":
+			out.Prev = m[1]
+		case "next":
+			out.Next = m[1]
+		case "last":
+			out.Last = m[1]
+		}
+	}
+	return out
 }
 
 // Create creates a payment (POST /payments). Pass an idempotencyKey to make the
@@ -235,12 +264,51 @@ func (s *PaymentsService) Sign(ctx context.Context, paymentID Bytes32, params Pa
 // from (release). On the refund prepare call, omitting the signature returns a
 // Transaction whose SigningPayload is populated (refund phase-1).
 func (s *PaymentsService) Prepare(ctx context.Context, paymentID Bytes32, op string, req ...PrepareRequest) (*Transaction, error) {
+	return s.PrepareWithKey(ctx, paymentID, op, "", req...)
+}
+
+// PrepareWithKey is Prepare with an Idempotency-Key. Pass "" to omit the header and
+// get Prepare's behaviour exactly.
+//
+// What the key buys: without it, a retry that arrives AFTER the first transaction was
+// signed and broadcast opens a SECOND one. That is correct for a genuine sequential
+// partial capture and wrong for a retry, and nothing but the caller can tell those
+// apart - the gateway's own state cannot, because by then the first transaction has
+// left `pending` (commercelayer/rail0-gateway#331). Replaying a key returns the
+// transaction the first call created, with HTTP 200 instead of 201; the same key with
+// different terms is refused 422 idempotency_key_reused. The key is scoped to this
+// payment, so reusing it on another one is free.
+func (s *PaymentsService) PrepareWithKey(ctx context.Context, paymentID Bytes32, op, idempotencyKey string, req ...PrepareRequest) (*Transaction, error) {
 	var out Transaction
 	var body any
 	if len(req) > 0 {
 		body = req[0]
 	}
-	if err := s.http.post(ctx, fmt.Sprintf("/payments/%s/%s/prepare", paymentID, op), body, &out); err != nil {
+	path := fmt.Sprintf("/payments/%s/%s/prepare", paymentID, op)
+	if idempotencyKey != "" {
+		headers := map[string]string{"Idempotency-Key": idempotencyKey}
+		if err := s.http.postWithHeaders(ctx, path, body, &out, headers); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
+	if err := s.http.post(ctx, path, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetTransaction reads ONE of a payment's transactions
+// (GET /payments/{id}/transactions/{transaction_id}).
+//
+// This is the lookup for an action id: anything handed a transaction id when an
+// operation was accepted resolves it directly, instead of fetching the payment and
+// scanning its transactions for an id it already holds
+// (commercelayer/rail0-gateway#330). Readable by either participant; an unknown,
+// malformed or foreign transaction id all answer 404 alike.
+func (s *PaymentsService) GetTransaction(ctx context.Context, paymentID Bytes32, transactionID string) (*Transaction, error) {
+	var out Transaction
+	if err := s.http.get(ctx, fmt.Sprintf("/payments/%s/transactions/%s", paymentID, transactionID), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -365,8 +433,28 @@ func disputeBody(reason ...string) map[string]any {
 // exactly 64 hex digits (right-pad a short code — "0x01" and friends are rejected
 // with a 400). Omit it and the gateway defaults to the zero bytes32.
 func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
+	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/prepare", "", reason...)
+}
+
+// DisputePrepareWithKey is DisputePrepare with an Idempotency-Key. Pass "" to omit
+// the header. See PrepareWithKey for what the key buys.
+func (s *PaymentsService) DisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason ...string) (*Transaction, error) {
+	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/prepare", idempotencyKey, reason...)
+}
+
+// disputePrepareWithKey is the one body both dispute prepares share, so the pair
+// cannot drift into answering the same header differently.
+func (s *PaymentsService) disputePrepareWithKey(ctx context.Context, path, idempotencyKey string, reason ...string) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/prepare", disputeBody(reason...), &out); err != nil {
+	body := disputeBody(reason...)
+	if idempotencyKey != "" {
+		headers := map[string]string{"Idempotency-Key": idempotencyKey}
+		if err := s.http.postWithHeaders(ctx, path, body, &out, headers); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
+	if err := s.http.post(ctx, path, body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -386,11 +474,12 @@ func (s *PaymentsService) Dispute(ctx context.Context, paymentID Bytes32, params
 // reason follows the same rule as DisputePrepare: a full bytes32 ("0x" + 64 hex
 // digits) when given, zero by default.
 func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
-	var out Transaction
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close/prepare", disputeBody(reason...), &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/close/prepare", "", reason...)
+}
+
+// CloseDisputePrepareWithKey is CloseDisputePrepare with an Idempotency-Key.
+func (s *PaymentsService) CloseDisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason ...string) (*Transaction, error) {
+	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/close/prepare", idempotencyKey, reason...)
 }
 
 // CloseDispute submits the signed close-dispute transaction (payer only).

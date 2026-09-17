@@ -241,6 +241,19 @@ for _, c := range bal.Balances {
 }
 ```
 
+## Pagination
+
+Every `PaginatedResponse[T]` carries `Data` and `Meta`. `Meta` is `{Page, PerPage, Total, TotalPages, Links}`.
+
+`TotalPages` is **zero** for an empty collection — "no pages" is what there are, so a pager rendered off it renders none. `Links` comes from the `Link` header: `First` and `Last` are always present, `Prev` and `Next` only where they exist, and all four are empty when the collection is. The URIs are **relative** (path + query) and resolve against the URL you requested — the gateway emits them that way so they cannot advertise the wrong scheme through a TLS-terminating proxy.
+
+```go
+page, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{PerPage: 100})
+for page.Meta.Links.Next != "" {
+    page, _ = client.Payments.List(ctx, rail0.ListPaymentsParams{Page: page.Meta.Page + 1, PerPage: 100})
+}
+```
+
 ## Payment methods (public)
 
 Public, buyer-facing discovery of a merchant's accepted payment methods — a
@@ -299,6 +312,16 @@ resp, _ := client.Payments.Create(ctx, rail0.CreatePaymentRequest{
 client.Payments.Sign(ctx, rail0ID, rail0.PayerSignatureRequest{Signature: "0x..."})
 
 // Authorize → Capture (each prepare returns a pending Transaction)
+// One of a payment's transactions by id - the lookup for an action id, so a caller
+// holding one resolves it directly instead of listing and scanning.
+tx0, _ := client.Payments.GetTransaction(ctx, rail0ID, transactionID)
+
+// Idempotent prepare. Without a key, a retry arriving after the first transaction was
+// signed and broadcast opens a SECOND one - right for a sequential partial capture,
+// wrong for a retry, and only the caller can tell those apart.
+tx1, _ := client.Payments.PrepareWithKey(ctx, rail0ID, rail0.OpCapture, orderID,
+    rail0.PrepareRequest{Amount: "50.00"})
+
 tx, _ := client.Payments.AuthorizePrepare(ctx, rail0ID)
 // sign tx.UnsignedTransaction → signedBytes
 client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
