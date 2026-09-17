@@ -278,11 +278,28 @@ type Webhook struct {
 	SharedSecret string   `json:"shared_secret,omitempty"`
 }
 
+// PageLinks holds the RFC 8288 Link header's relations. first and last are always
+// present, prev and next only where they exist, and all four are empty on an empty
+// collection (the gateway omits the header rather than sending one pointing nowhere).
+// The URIs are RELATIVE - path and query - and resolve against the URL you requested:
+// the gateway emits them that way so they cannot advertise the wrong scheme through a
+// TLS-terminating proxy.
+type PageLinks struct {
+	First string `json:"first,omitempty"`
+	Prev  string `json:"prev,omitempty"`
+	Next  string `json:"next,omitempty"`
+	Last  string `json:"last,omitempty"`
+}
+
 // PageMeta holds pagination metadata returned by list endpoints.
 type PageMeta struct {
 	Page    int `json:"page"`
 	PerPage int `json:"per_page"`
 	Total   int `json:"total"`
+	// TotalPages is zero for an empty collection: "no pages" is what there are,
+	// so a pager rendered off it renders none.
+	TotalPages int       `json:"total_pages"`
+	Links      PageLinks `json:"links"`
 }
 
 // PaginatedResponse is a generic paginated list response.
