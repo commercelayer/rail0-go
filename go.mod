@@ -1,4 +1,4 @@
-module github.com/rail0/go-sdk
+module github.com/commercelayer/rail0-go
 
 go 1.25.0
 

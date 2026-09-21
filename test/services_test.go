@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	rail0 "github.com/rail0/go-sdk"
+	rail0 "github.com/commercelayer/rail0-go"
 )
 
 // ================================================================

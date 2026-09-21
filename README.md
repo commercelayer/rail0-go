@@ -11,7 +11,7 @@ Go ≥ 1.25
 ## Installation
 
 ```bash
-go get github.com/rail0/go-sdk
+go get github.com/commercelayer/rail0-go
 ```
 
 ## Quick start
