@@ -93,13 +93,36 @@ var Stablecoins = map[string]ChainStablecoins{
 			"EURC": {Address: "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a", Decimals: 6, EIP3009: true, EIP2612: true},
 		},
 	},
-	// Celo Sepolia (Alfajores) — FiatTokenV2 (Circle), same implementation as Celo mainnet.
-	// EIP-3009 confirmed by mainnet parity; EIP-2612 assumed from FiatTokenV2 standard.
-	// RPC publicly unreachable at time of writing — verify when stable endpoint available.
+	// Celo Sepolia — CORRECTED 2026-09-22, read off the chain. This entry previously
+	// carried chain id 44787 (that is ALFAJORES, a different and now-retired network)
+	// and a USDC address with no code deployed at it on Celo Sepolia. Both came from
+	// the "verify when a stable endpoint is available" note this comment replaces.
+	//
+	// The token list is not guesswork either: it is the immutable acceptedTokens()
+	// allowlist of the RAIL0 1.3.0 deployment on this chain, which is the authority on
+	// what a payment there can use. Both carry the canonical EIP-3009 typehash and
+	// answer nonces(), so both extensions are confirmed rather than assumed.
 	"celo-sepolia": {
-		ChainID: 44787,
+		ChainID: 11142220,
 		Tokens: map[string]StablecoinInfo{
-			"USDC": {Address: "0x2F25deB3848C207fc8E0c34035B3Ba7fC157602B", Decimals: 6, EIP3009: true, EIP2612: true},
+			"USDC": {Address: "0x01C5C0122039549AD1493B8220cABEdD739BC44E", Decimals: 6, EIP3009: true, EIP2612: true},
+			"USD₮": {Address: "0xd077A400968890Eacc75cdc901F0356c943e4fDb", Decimals: 6, EIP3009: true, EIP2612: true},
+		},
+	},
+	// Ethereum Sepolia — RAIL0 1.4.0 runs here (commercelayer/rail0#82). PYUSD is the
+	// first non-Circle token in the catalogue, and the reason the chain is served at
+	// all: it is issued on no other chain.
+	//
+	// Note for anyone signing against PYUSD directly: its EIP-712 domain name is
+	// "PayPal USD" (not the symbol) and its version is "1", which version() does NOT
+	// expose — it reverts. Through a RAIL0 payment this never bites, because the domain
+	// arrives in the gateway's signing_payload; constructing it by hand from the symbol
+	// produces a signature the token rejects.
+	"ethereum-sepolia": {
+		ChainID: 11155111,
+		Tokens: map[string]StablecoinInfo{
+			"USDC":  {Address: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", Decimals: 6, EIP3009: true, EIP2612: true},
+			"PYUSD": {Address: "0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9", Decimals: 6, EIP3009: true, EIP2612: true},
 		},
 	},
 }

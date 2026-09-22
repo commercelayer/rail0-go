@@ -150,6 +150,72 @@ func TestStablecoinRegistry(t *testing.T) {
 	_ = rail0.EIP2612Tokens("ethereum") // exercised; may be empty on some chains
 }
 
+// The testnet entries, pinned because both have been wrong in ways that are
+// invisible from Go: celo-sepolia carried Alfajores' chain id (44787) and a USDC
+// address with no code on the chain it names, and a caller looking up an address
+// to sign against gets a plausible-looking answer either way. Asserting the chain
+// ids and the exact addresses is what turns that into a test failure.
+func TestStablecoinRegistryTestnets(t *testing.T) {
+	for _, tc := range []struct {
+		chain   string
+		chainID int
+		tokens  map[string]string
+	}{
+		{"arc-testnet", 5042002, map[string]string{
+			"USDC": "0x3600000000000000000000000000000000000000",
+			"EURC": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+		}},
+		{"celo-sepolia", 11142220, map[string]string{
+			"USDC": "0x01C5C0122039549AD1493B8220cABEdD739BC44E",
+			"USD₮": "0xd077A400968890Eacc75cdc901F0356c943e4fDb",
+		}},
+		{"ethereum-sepolia", 11155111, map[string]string{
+			"USDC":  "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+			"PYUSD": "0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9",
+		}},
+	} {
+		info, ok := rail0.ChainInfo(tc.chain)
+		if !ok {
+			t.Errorf("%s: missing from the registry", tc.chain)
+			continue
+		}
+		if info.ChainID != tc.chainID {
+			t.Errorf("%s: chain id %d, want %d", tc.chain, info.ChainID, tc.chainID)
+		}
+		if len(info.Tokens) != len(tc.tokens) {
+			t.Errorf("%s: %d tokens, want %d", tc.chain, len(info.Tokens), len(tc.tokens))
+		}
+		for sym, addr := range tc.tokens {
+			tok, ok := info.Tokens[sym]
+			if !ok {
+				t.Errorf("%s: %s missing", tc.chain, sym)
+				continue
+			}
+			if tok.Address != addr {
+				t.Errorf("%s/%s: address %s, want %s", tc.chain, sym, tok.Address, addr)
+			}
+			if tok.Decimals != 6 {
+				t.Errorf("%s/%s: decimals %d, want 6", tc.chain, sym, tok.Decimals)
+			}
+			// RAIL0 pulls funds with receiveWithAuthorization, so a token that is
+			// not EIP-3009 cannot be paid with and must never be listed as payable.
+			if !tok.EIP3009 {
+				t.Errorf("%s/%s: not marked EIP-3009", tc.chain, sym)
+			}
+		}
+	}
+
+	// PYUSD is the first non-Circle token served, so it is the one that proves the
+	// registry is not implicitly a USDC list.
+	syms := map[string]bool{}
+	for _, tok := range rail0.EIP3009Tokens("ethereum-sepolia") {
+		syms[tok.Symbol] = true
+	}
+	if !syms["PYUSD"] {
+		t.Error("ethereum-sepolia must expose PYUSD as an EIP-3009 token")
+	}
+}
+
 func TestDisputesList(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(listResp(200, []map[string]any{
