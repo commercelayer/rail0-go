@@ -130,3 +130,34 @@ func TestAuthRevokeAllSignsAPurposeBoundProofAndClearsTheToken(t *testing.T) {
 		t.Errorf("Authorization after RevokeAll = %q, want it cleared", sentAfter)
 	}
 }
+
+// A refused revoke-all (a login proof replayed here is 422 siwe_purpose_mismatch)
+// revoked nothing, so the client's session is still valid and must be KEPT: clearing
+// it would log the caller out for an operation that did not happen.
+func TestAuthRevokeAllKeepsTheTokenWhenRefused(t *testing.T) {
+	var sentAfter string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/auth/nonces":
+			_ = json.NewEncoder(w).Encode(map[string]string{"nonce": "abc123nonce9"})
+		case "/auth/revoke_all":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"errors":[{"code":"siwe_purpose_mismatch","title":"Unprocessable","detail":"wrong statement"}]}`))
+		default:
+			sentAfter = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt-abc"})
+	key, _ := HexToPrivateKey("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+	if _, err := c.Auth.RevokeAll(context.Background(), key, "api.rail0.xyz"); err == nil {
+		t.Fatal("a 422 must surface as an error")
+	}
+	_, _ = c.Health.Get(context.Background())
+	if sentAfter != "Bearer jwt-abc" {
+		t.Errorf("Authorization after a refused RevokeAll = %q, want the session kept", sentAfter)
+	}
+}
