@@ -48,13 +48,17 @@ type LogoutResponse struct {
 
 // RevokeAllResponse is the outcome of POST /auth/revoke_all.
 //
-// Cutoff is the instant the gateway recorded, and it is the field worth logging: it
+// CutoffAt is the instant the gateway recorded, and it is the field worth logging: it
 // says exactly which sessions died. A boolean cannot — every session of the address
 // whose iat precedes this instant is refused from now on, including the ones the
 // caller never saw.
+//
+// The JSON names are the gateway's own (`revoked_all`, `cutoff_at`). This type used
+// to read `revoked`/`cutoff`, which the gateway never sent, so even a successful call
+// decoded as {false, ""}.
 type RevokeAllResponse struct {
-	Revoked bool   `json:"revoked"`
-	Cutoff  string `json:"cutoff"`
+	RevokedAll bool   `json:"revoked_all"`
+	CutoffAt   string `json:"cutoff_at"`
 }
 
 // GetNonce issues a single-use SIWE nonce from the API (POST /auth/nonces).
@@ -103,22 +107,39 @@ func (s *AuthService) Logout(ctx context.Context) (*LogoutResponse, error) {
 	return &out, nil
 }
 
-// RevokeAll ends EVERY session of the calling address (POST /auth/revoke_all).
+// RevokeAll ends EVERY session of the address controlled by privateKey
+// (POST /auth/revoke_all).
 //
 // The answer to a key you no longer trust, and Logout cannot be that answer: Logout is
 // per TOKEN, so an address with five live sessions needs five tokens the caller does not
 // have. This is per ADDRESS and reaches the ones it has never seen — including any an
 // attacker is holding.
 //
-// The gateway records a cutoff INSTANT rather than enumerating tokens, so a session
-// minted a moment before the call is refused by its own iat. That is what makes this
-// durable where a denylist is not.
+// Authorized by a FRESH SIWE PROOF of the address, not by the session: someone reacting
+// to a leaked key holds the wallet, not the stolen token, so requiring the session would
+// make this useless exactly when it is needed. The proof is the same handshake as Login —
+// fetch a single-use nonce, build an EIP-4361 message, sign it with EIP-191
+// personal_sign — but carries the REVOKE-ALL statement, so a login proof cannot be
+// replayed here (the gateway answers 422 siwe_purpose_mismatch). This method used to
+// post an empty body, which the gateway refused with 400 on every call. domain/chainID
+// carry the same meaning and defaults as Login.
 //
-// The local token is cleared on success, exactly as Logout does: the client must not keep
-// sending a credential it just had invalidated.
-func (s *AuthService) RevokeAll(ctx context.Context) (*RevokeAllResponse, error) {
+// The gateway records a cutoff INSTANT rather than enumerating tokens, and it is
+// self-revoking: the cutoff is just after now, so the token this client may hold dies
+// with the rest. The local token is therefore cleared on success, exactly as Logout does
+// — the client must not keep sending a credential it just had invalidated — and the
+// caller signs in again afterwards.
+func (s *AuthService) RevokeAll(ctx context.Context, privateKey []byte, domain string, chainID ...int) (*RevokeAllResponse, error) {
+	nonceResp, err := s.GetNonce(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("rail0: get nonce: %w", err)
+	}
+	message, sig, err := signSIWE(privateKey, domain, nonceResp.Nonce, siweRevokeAllStatement, loginChainID(chainID...))
+	if err != nil {
+		return nil, err
+	}
 	var out RevokeAllResponse
-	if err := s.http.post(ctx, "/auth/revoke_all", struct{}{}, &out); err != nil {
+	if err := s.http.post(ctx, "/auth/revoke_all", AuthRequest{Message: message, Signature: sig}, &out); err != nil {
 		return nil, err
 	}
 	s.http.SetToken("")
@@ -200,8 +221,8 @@ func loginChainID(chainID ...int) int {
 }
 
 // SIWE statements, one per PURPOSE. The gateway binds each endpoint to exactly
-// one of these (Policy::SIWE_LOGIN_STATEMENT / SIWE_WALLET_LINK_STATEMENT) and
-// rejects the other with 422 siwe_purpose_mismatch.
+// one of these (Policy::SIWE_LOGIN_STATEMENT / SIWE_WALLET_LINK_STATEMENT /
+// SIWE_REVOKE_ALL_STATEMENT) and rejects the others with 422 siwe_purpose_mismatch.
 //
 // They are not interchangeable and must not be collapsed back into one. A login
 // signature is handed out on every sign-in; if the wallet-link endpoint also
@@ -211,6 +232,7 @@ func loginChainID(chainID ...int) int {
 const (
 	siweLoginStatement      = "Sign in to RAIL0"
 	siweWalletLinkStatement = "Add this wallet to your RAIL0 account"
+	siweRevokeAllStatement  = "Sign out of RAIL0 everywhere"
 )
 
 // signSIWE builds an EIP-4361 message for the address controlled by privateKey

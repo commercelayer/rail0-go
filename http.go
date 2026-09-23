@@ -324,6 +324,7 @@ func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, bod
 				Message:    detail,
 				Reason:     errBody.Reason,
 				RetryAfter: parseRetryAfter(resp.Header),
+				Body:       json.RawMessage(raw),
 			}
 			// A 429 is retried only when opted in (RetryOn429) and the retry budget is
 			// not exhausted — sleeping for the server's Retry-After rather than the

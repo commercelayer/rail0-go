@@ -32,10 +32,20 @@ but could not record the revocation, and the token is still usable until `exp`.
 per **token**, so an address with five live sessions needs five tokens you do not
 have. `RevokeAll` is per **address** and reaches the ones you never saw — including
 any an attacker is holding — which makes it the call for a key you no longer trust.
+It is authorized by a **fresh SIWE proof** of the address, not by the session —
+whoever reacts to a leaked key holds the wallet, not the stolen token — so it takes
+the private key and the gateway host, like `Login`, and signs a message carrying its
+own statement ("Sign out of RAIL0 everywhere"), which a login proof cannot replay.
 The gateway records a cutoff **instant** rather than enumerating tokens, so a session
-minted a moment before the call is refused by its own `iat`. `Cutoff` carries that
+minted a moment before the call is refused by its own `iat`. `CutoffAt` carries that
 instant and is the field worth logging: it says exactly which sessions died, which a
-boolean cannot. The local token is cleared either way.
+boolean cannot. The cutoff includes the caller's own session, so the local token is
+cleared and the client signs in again afterwards.
+
+```go
+res, err := client.Auth.RevokeAll(ctx, key, "api.rail0.xyz")
+// res.RevokedAll, res.CutoffAt
+```
 
 ```go
 client := rail0.NewClient(rail0.ClientOptions{BaseURL: "https://api.rail0.xyz"})
@@ -137,17 +147,15 @@ tokens, _ := client.Tokens.List(ctx, rail0.ListTokensParams{ChainID: 8453}) // G
 ```go
 h, _ := client.Health.Get(ctx) // GET /health
 fmt.Println(h.Status, h.ActiveChains)
-if h.Sidekiq != nil { // authenticated calls only — see below
-    fmt.Println(h.Sidekiq.Status, h.Sidekiq.Processes, h.Sidekiq.Enqueued)
-}
 ```
 
-The endpoint is public, but only `Status`, `DB` and `Timestamp` come back to an
-anonymous caller: `APIVersion`, `ContractVersion`, `ActiveChains`,
-`ActiveContracts` and `Sidekiq` are session-gated, so set a token on the client
-first or they arrive zero-valued (`Sidekiq` nil). `Status` is `"ok"`,
-`"degraded"` (database fine, workers not — `Sidekiq` says why) or `"error"`
-(database down, the only case that also returns HTTP 503).
+The endpoint is public and token-blind: every caller gets the same body, whether or
+not the client carries a session. `Status` is `"ok"`, `"degraded"` (database fine,
+workers not — the only thing that produces it) or `"error"` (database down, the
+only case that also returns HTTP 503). The worker-fleet detail is operator-only, on
+the gateway's `/admin/health`, and is not part of this SDK. On that 503, `Get` returns the
+report **and** the `*APIError`: checking `err` alone still treats it as a failure, and the
+report says what failed (it used to be dropped, leaving an error that read "HTTP 503").
 
 ## Wallets (under accounts, JWT)
 

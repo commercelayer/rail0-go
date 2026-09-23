@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -72,9 +73,8 @@ func TestVerify_PostsToAuth(t *testing.T) {
 func TestHealth_GetsHealth(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
-		"status": "degraded", "api_version": "v1", "contract_version": "1.2.1",
-		"db": "ok", "active_chains": 2, "active_contracts": 1,
-		"sidekiq":   map[string]any{"status": "degraded", "redis": "ok", "processes": 0, "enqueued": 12},
+		"status": "degraded", "api_version": "v1", "contract_version": "1.3.0",
+		"db": "ok", "active_chains": 2, "active_contracts": 2,
 		"timestamp": "2026-01-01T00:00:00Z",
 	}))
 	client := newMockClient(t, mt)
@@ -86,36 +86,21 @@ func TestHealth_GetsHealth(t *testing.T) {
 	if mt.recorded[0].URL.Path != "/health" {
 		t.Errorf("path: got %s, want /health", mt.recorded[0].URL.Path)
 	}
-	if res.Status != "degraded" || res.ActiveChains != 2 {
+	if res.Status != "degraded" || res.DB != "ok" || res.ActiveChains != 2 || res.ContractVersion != "1.3.0" {
 		t.Errorf("unexpected health: %+v", res)
-	}
-	// The sidekiq section is the only thing that says WHY the status is degraded.
-	if res.Sidekiq == nil {
-		t.Fatal("sidekiq must be decoded when the gateway reports it")
-	}
-	if res.Sidekiq.Status != "degraded" || res.Sidekiq.Redis != "ok" || res.Sidekiq.Enqueued != 12 {
-		t.Errorf("unexpected sidekiq: %+v", res.Sidekiq)
 	}
 }
 
-// An anonymous caller gets liveness only: the session-gated detail is absent, and
-// Sidekiq stays nil rather than looking like a reported-but-empty fleet.
-func TestHealth_AnonymousResponseOmitsGatedDetail(t *testing.T) {
-	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{
-		"status": "ok", "db": "ok", "timestamp": "2026-01-01T00:00:00Z",
-	}))
-	client := newMockClient(t, mt)
-
-	res, err := client.Health.Get(context.Background())
+// The body is token-blind: the worker-fleet detail moved to the operator-only
+// /admin/health (#289), so the type must not carry a field that can only decode as
+// nil. Re-encoding the response must not resurrect a `sidekiq` key either.
+func TestHealth_CarriesNoWorkerFleetDetail(t *testing.T) {
+	b, err := json.Marshal(rail0.HealthResponse{Status: "ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != "ok" || res.DB != "ok" {
-		t.Errorf("unexpected health: %+v", res)
-	}
-	if res.Sidekiq != nil {
-		t.Errorf("Sidekiq must be nil when not reported, got %+v", res.Sidekiq)
+	if strings.Contains(string(b), "sidekiq") {
+		t.Errorf("HealthResponse still carries the fleet detail: %s", b)
 	}
 }
 
@@ -837,5 +822,56 @@ func TestWallets_EnableAndDisableToken_PatchTheirSubAction(t *testing.T) {
 		if want := "/accounts/acc_1/wallets/w_1/tokens/tok_1/" + tc.action; req.URL.Path != want {
 			t.Errorf("%s path: got %s, want %s", tc.action, req.URL.Path, want)
 		}
+	}
+}
+
+// The filters the gateway accepts and the SDK used to drop: payments carrying an
+// operation, wallets' nested holdings by active flag, and deliveries by the
+// subscriber's exact response code.
+func TestListFiltersTheGatewayAcceptsReachTheQuery(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(listResp(200, []any{}, "0"))
+	mt.push(listResp(200, []any{}, "0"))
+	mt.push(listResp(200, []any{}, "0"))
+	client := newMockClient(t, mt)
+	ctx := context.Background()
+
+	if _, err := client.Payments.List(ctx, rail0.ListPaymentsParams{Operation: "dispute"}); err != nil {
+		t.Fatal(err)
+	}
+	inactive := false
+	if _, err := client.Wallets.List(ctx, "acc_1", rail0.ListWalletsParams{TokenActive: &inactive}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Webhooks.EventCallbacks(ctx, "wh_1", rail0.ListEventCallbacksParams{ResponseCode: "500"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, want := range []struct{ key, value string }{
+		{"operation", "dispute"}, {"token_active", "false"}, {"response_code", "500"},
+	} {
+		if got := mt.recorded[i].URL.Query().Get(want.key); got != want.value {
+			t.Errorf("request %d: %s = %q, want %q (query %s)", i, want.key, got, want.value, mt.recorded[i].URL.RawQuery)
+		}
+	}
+}
+
+// A 503 from /health carries the report — the database is down, and that is exactly
+// what a caller needs to read. Get returns it together with the error, instead of an
+// error whose detail was the bare "HTTP 503".
+func TestHealth_503ReturnsTheReportAndTheError(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(503, map[string]any{
+		"status": "error", "db": "error", "timestamp": "2026-01-01T00:00:00Z",
+	}))
+	client := newMockClient(t, mt)
+
+	res, err := client.Health.Get(context.Background())
+	var apiErr *rail0.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 503 {
+		t.Fatalf("err = %v, want the 503 as an *APIError", err)
+	}
+	if res == nil || res.Status != "error" || res.DB != "error" {
+		t.Errorf("report = %+v, want the body's status/db", res)
 	}
 }

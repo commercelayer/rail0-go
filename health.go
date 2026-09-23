@@ -1,6 +1,11 @@
 package rail0
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+)
 
 // HealthService exposes the gateway liveness/readiness check (public, no auth).
 type HealthService struct {
@@ -9,49 +14,45 @@ type HealthService struct {
 
 // HealthResponse is returned by GET /health.
 //
-// Only Status, DB and Timestamp are always present: the endpoint is public (so a
-// platform liveness probe can call it token-less) but the DETAIL is session-gated.
-// APIVersion, ContractVersion, ActiveChains, ActiveContracts and Sidekiq are
-// returned ONLY to an authenticated caller — set a token on the client first, or
-// they come back zero-valued, which is indistinguishable from "not reported".
+// The endpoint is public and TOKEN-BLIND: every caller gets the same body, and a
+// token on the client changes nothing. It used to be tiered, with the Sidekiq
+// worker-fleet figures behind any valid session; the gateway moved that detail to
+// the operator-only GET /admin/health (#289), so the Sidekiq field this type
+// carried could only ever decode as nil.
 type HealthResponse struct {
-	// Status is the global signal: "ok", "degraded" (database fine, workers not)
-	// or "error" (database down — the only case that also returns HTTP 503).
+	// Status is the global signal: "ok", "degraded" (database fine, workers not —
+	// the only thing that produces it) or "error" (database down — the only case
+	// that also returns HTTP 503).
 	Status          string `json:"status"`
 	APIVersion      string `json:"api_version"`
 	ContractVersion string `json:"contract_version"`
 	DB              string `json:"db"`
 	ActiveChains    int    `json:"active_chains"`
 	ActiveContracts int    `json:"active_contracts"`
-	// Sidekiq reports the worker fleet; nil for an unauthenticated caller. It is
-	// the only way to learn WHY Status came back "degraded".
-	Sidekiq   *SidekiqStatus `json:"sidekiq"`
-	Timestamp string         `json:"timestamp"`
+	Timestamp       string `json:"timestamp"`
 }
 
-// SidekiqStatus is the worker-fleet section of HealthResponse (authenticated
-// callers only). A degraded Sidekiq is reported but never gates liveness: the API
-// still serves synchronous requests with the workers down, jobs simply queue.
-type SidekiqStatus struct {
-	// Status is "ok" (Redis up, at least one live worker), "degraded" (Redis up but
-	// no live worker, or the stats read failed) or "down" (Redis unreachable).
-	Status string `json:"status"`
-	// Redis is "ok" or "error".
-	Redis string `json:"redis"`
-	// Processes is the live Sidekiq process count. Absent (zero) when Redis is down.
-	Processes int `json:"processes"`
-	// Enqueued is the total backlog across queues. Absent (zero) when Redis is down.
-	Enqueued int `json:"enqueued"`
-}
-
-// Get reports gateway health, including database connectivity. The gateway
-// returns HTTP 503 (surfaced as *APIError) when the database is unreachable.
-// Callable without a token, but the detail fields listed on HealthResponse are
-// filled in only when the client carries one.
+// Get reports gateway health, including database connectivity. Callable without a
+// token; the body is the same with or without one.
+//
+// A 503 is still an answer: the gateway sends it, with the full health report, exactly
+// when its database is down — the one reading a caller most needs to see. So on a 503
+// whose body is a health report, Get returns BOTH that report and the *APIError: the
+// error keeps "unhealthy" an error (a caller checking err alone behaves as before), and
+// the report says what is wrong. It used to return only the error, whose detail was the
+// bare "HTTP 503", and the report was thrown away.
 func (s *HealthService) Get(ctx context.Context) (*HealthResponse, error) {
 	var out HealthResponse
-	if err := s.http.get(ctx, "/health", &out); err != nil {
-		return nil, err
+	err := s.http.get(ctx, "/health", &out)
+	if err == nil {
+		return &out, nil
 	}
-	return &out, nil
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusServiceUnavailable {
+		var report HealthResponse
+		if json.Unmarshal(apiErr.Body, &report) == nil && report.Status != "" {
+			return &report, err
+		}
+	}
+	return nil, err
 }
