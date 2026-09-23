@@ -38,6 +38,7 @@ type ListPaymentsParams struct {
 	MaxAmount   string // maximum amount in token base units (inclusive)
 	CreatedFrom string // only payments created at/after this ISO-8601 time
 	CreatedTo   string // only payments created at/before this ISO-8601 time
+	Operation   string // only payments carrying at least one transaction with this operation (e.g. "dispute")
 	Sort        string // sort fields: comma-separated, prefix with - for desc
 	Page        int    // page number (1-based); 0 = use server default
 	PerPage     int    // items per page; 0 = use server default
@@ -87,6 +88,9 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 		}
 		if p.CreatedTo != "" {
 			q.Set("created_to", p.CreatedTo)
+		}
+		if p.Operation != "" {
+			q.Set("operation", p.Operation)
 		}
 		if p.Sort != "" {
 			q.Set("sort", p.Sort)

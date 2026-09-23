@@ -27,6 +27,7 @@ type ListWalletsParams struct {
 	TokenSymbol string // restrict nested tokens to this symbol (e.g. "USDC")
 	Active      *bool  // filter wallets by active flag; nil = no filter
 	Default     *bool  // restrict nested token holdings to the default one; nil = no filter
+	TokenActive *bool  // restrict nested token holdings to this active flag; nil = no filter
 	Sort        string // sort fields: comma-separated, prefix with - for desc
 	Page        int    // page number (1-based); 0 = use server default
 	PerPage     int    // items per page; 0 = use server default
@@ -50,6 +51,9 @@ func (s *WalletsService) List(ctx context.Context, accountID string, params ...L
 		}
 		if p.Default != nil {
 			q.Set("default", strconv.FormatBool(*p.Default))
+		}
+		if p.TokenActive != nil {
+			q.Set("token_active", strconv.FormatBool(*p.TokenActive))
 		}
 		if p.Sort != "" {
 			q.Set("sort", p.Sort)

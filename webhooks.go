@@ -235,14 +235,15 @@ func (s *WebhooksService) putAction(ctx context.Context, id, action string) (*We
 
 // ListEventCallbacksParams holds optional query parameters for EventCallbacks.
 type ListEventCallbacksParams struct {
-	Status    string // filter by delivery status ("pending", "delivered", "failed")
-	Topic     string // filter by event topic
-	PaymentID string // filter by the payment the delivery is for
-	Since     string // only deliveries at/after this ISO-8601 time
-	Until     string // only deliveries at/before this ISO-8601 time
-	Sort      string // sort fields: comma-separated, prefix with - for desc
-	Page      int    // page number (1-based); 0 = use server default
-	PerPage   int    // items per page; 0 = use server default
+	Status       string // filter by delivery status ("delivered" or "failed" — no row is ever pending)
+	Topic        string // filter by event topic
+	PaymentID    string // filter by the payment the delivery is for (its UUID)
+	ResponseCode string // filter by the subscriber's exact HTTP response code (e.g. "500")
+	Since        string // only deliveries at/after this ISO-8601 time
+	Until        string // only deliveries at/before this ISO-8601 time
+	Sort         string // sort fields: comma-separated, prefix with - for desc
+	Page         int    // page number (1-based); 0 = use server default
+	PerPage      int    // items per page; 0 = use server default
 }
 
 // EventCallbacks lists delivery attempts for a webhook (requires JWT).
@@ -259,6 +260,9 @@ func (s *WebhooksService) EventCallbacks(ctx context.Context, id string, params 
 		}
 		if p.PaymentID != "" {
 			q.Set("payment_id", p.PaymentID)
+		}
+		if p.ResponseCode != "" {
+			q.Set("response_code", p.ResponseCode)
 		}
 		if p.Since != "" {
 			q.Set("since", p.Since)

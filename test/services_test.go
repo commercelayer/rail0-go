@@ -839,3 +839,34 @@ func TestWallets_EnableAndDisableToken_PatchTheirSubAction(t *testing.T) {
 		}
 	}
 }
+
+// The filters the gateway accepts and the SDK used to drop: payments carrying an
+// operation, wallets' nested holdings by active flag, and deliveries by the
+// subscriber's exact response code.
+func TestListFiltersTheGatewayAcceptsReachTheQuery(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(listResp(200, []any{}, "0"))
+	mt.push(listResp(200, []any{}, "0"))
+	mt.push(listResp(200, []any{}, "0"))
+	client := newMockClient(t, mt)
+	ctx := context.Background()
+
+	if _, err := client.Payments.List(ctx, rail0.ListPaymentsParams{Operation: "dispute"}); err != nil {
+		t.Fatal(err)
+	}
+	inactive := false
+	if _, err := client.Wallets.List(ctx, "acc_1", rail0.ListWalletsParams{TokenActive: &inactive}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Webhooks.EventCallbacks(ctx, "wh_1", rail0.ListEventCallbacksParams{ResponseCode: "500"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, want := range []struct{ key, value string }{
+		{"operation", "dispute"}, {"token_active", "false"}, {"response_code", "500"},
+	} {
+		if got := mt.recorded[i].URL.Query().Get(want.key); got != want.value {
+			t.Errorf("request %d: %s = %q, want %q (query %s)", i, want.key, got, want.value, mt.recorded[i].URL.RawQuery)
+		}
+	}
+}
