@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -76,54 +77,55 @@ func TestAuthLogoutSurfacesAFailedRevocation(t *testing.T) {
 	}
 }
 
-// RevokeAll is the endpoint for a key you no longer trust, and the two things a wrong
-// implementation gets wrong are both asserted here: it must carry the CUTOFF back (a
-// boolean cannot say which sessions died) and it must clear the local token, exactly as
-// Logout does — a client that keeps sending a credential it just had invalidated is a
-// client that has not revoked anything from its own point of view.
-func TestAuthRevokeAllReturnsTheCutoffAndClearsTheToken(t *testing.T) {
-	var gotMethod, gotPath, gotAuth string
+// RevokeAll is the endpoint for a key you no longer trust. What a wrong implementation
+// gets wrong is all asserted here: it must be authorized by a fresh SIWE proof carrying
+// the REVOKE-ALL statement (an empty body is a 400, a login proof a 422), it must read
+// the cutoff back under the gateway's own names, and it must clear the local token —
+// the gateway's cutoff is self-revoking, so that token is dead anyway.
+func TestAuthRevokeAllSignsAPurposeBoundProofAndClearsTheToken(t *testing.T) {
+	var body AuthRequest
+	var sentAfter string
+	revoked := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"revoked": true,
-			"cutoff":  "2026-08-27T21:00:00Z",
-		})
+		switch r.URL.Path {
+		case "/auth/nonces":
+			_ = json.NewEncoder(w).Encode(map[string]string{"nonce": "abc123nonce9", "expires_at": "2030-01-01T00:00:00Z"})
+		case "/auth/revoke_all":
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			revoked = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"revoked_all": true, "cutoff_at": "2026-08-27T21:00:00Z"})
+		default:
+			sentAfter = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}
 	}))
 	defer srv.Close()
 
 	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt-abc"})
+	key, _ := HexToPrivateKey("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
 
-	res, err := c.Auth.RevokeAll(context.Background())
+	res, err := c.Auth.RevokeAll(context.Background(), key, "api.rail0.xyz")
 	if err != nil {
 		t.Fatalf("RevokeAll: %v", err)
 	}
-	if !res.Revoked {
-		t.Error("Revoked = false, want the gateway's true")
+	if !revoked {
+		t.Fatal("POST /auth/revoke_all was never called")
 	}
-	if res.Cutoff != "2026-08-27T21:00:00Z" {
-		t.Errorf("Cutoff = %q, want the instant the gateway recorded", res.Cutoff)
+	if !res.RevokedAll {
+		t.Error("RevokedAll = false, want the gateway's true")
 	}
-	if gotMethod != http.MethodPost || gotPath != "/auth/revoke_all" {
-		t.Errorf("called %s %s, want POST /auth/revoke_all", gotMethod, gotPath)
+	if res.CutoffAt != "2026-08-27T21:00:00Z" {
+		t.Errorf("CutoffAt = %q, want the instant the gateway recorded", res.CutoffAt)
 	}
-	if gotAuth != "Bearer jwt-abc" {
-		t.Errorf("Authorization = %q, want the session proving whose address this is", gotAuth)
+	if !strings.Contains(body.Message, "Sign out of RAIL0 everywhere") {
+		t.Errorf("the proof must carry the revoke-all statement, got message:\n%s", body.Message)
+	}
+	if !strings.Contains(body.Message, "abc123nonce9") || !strings.HasPrefix(body.Signature, "0x") {
+		t.Errorf("the proof must embed the fresh nonce and be signed, got %+v", body)
 	}
 
-	var sentAfter string
-	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sentAfter = r.Header.Get("Authorization")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	}))
-	defer srv2.Close()
-	c2 := NewClient(ClientOptions{BaseURL: srv2.URL, Token: "jwt-abc"})
-	if _, err := c2.Auth.RevokeAll(context.Background()); err != nil {
-		t.Fatalf("RevokeAll on srv2: %v", err)
-	}
-	_, _ = c2.Health.Get(context.Background())
+	_, _ = c.Health.Get(context.Background())
 	if sentAfter != "" && sentAfter != "Bearer " {
 		t.Errorf("Authorization after RevokeAll = %q, want it cleared", sentAfter)
 	}

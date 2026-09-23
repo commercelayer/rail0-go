@@ -32,10 +32,20 @@ but could not record the revocation, and the token is still usable until `exp`.
 per **token**, so an address with five live sessions needs five tokens you do not
 have. `RevokeAll` is per **address** and reaches the ones you never saw — including
 any an attacker is holding — which makes it the call for a key you no longer trust.
+It is authorized by a **fresh SIWE proof** of the address, not by the session —
+whoever reacts to a leaked key holds the wallet, not the stolen token — so it takes
+the private key and the gateway host, like `Login`, and signs a message carrying its
+own statement ("Sign out of RAIL0 everywhere"), which a login proof cannot replay.
 The gateway records a cutoff **instant** rather than enumerating tokens, so a session
-minted a moment before the call is refused by its own `iat`. `Cutoff` carries that
+minted a moment before the call is refused by its own `iat`. `CutoffAt` carries that
 instant and is the field worth logging: it says exactly which sessions died, which a
-boolean cannot. The local token is cleared either way.
+boolean cannot. The cutoff includes the caller's own session, so the local token is
+cleared and the client signs in again afterwards.
+
+```go
+res, err := client.Auth.RevokeAll(ctx, key, "api.rail0.xyz")
+// res.RevokedAll, res.CutoffAt
+```
 
 ```go
 client := rail0.NewClient(rail0.ClientOptions{BaseURL: "https://api.rail0.xyz"})
