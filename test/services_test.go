@@ -72,9 +72,8 @@ func TestVerify_PostsToAuth(t *testing.T) {
 func TestHealth_GetsHealth(t *testing.T) {
 	mt := &mockTransport{t: t}
 	mt.push(jsonResp(200, map[string]any{
-		"status": "degraded", "api_version": "v1", "contract_version": "1.2.1",
-		"db": "ok", "active_chains": 2, "active_contracts": 1,
-		"sidekiq":   map[string]any{"status": "degraded", "redis": "ok", "processes": 0, "enqueued": 12},
+		"status": "degraded", "api_version": "v1", "contract_version": "1.3.0",
+		"db": "ok", "active_chains": 2, "active_contracts": 2,
 		"timestamp": "2026-01-01T00:00:00Z",
 	}))
 	client := newMockClient(t, mt)
@@ -86,36 +85,21 @@ func TestHealth_GetsHealth(t *testing.T) {
 	if mt.recorded[0].URL.Path != "/health" {
 		t.Errorf("path: got %s, want /health", mt.recorded[0].URL.Path)
 	}
-	if res.Status != "degraded" || res.ActiveChains != 2 {
+	if res.Status != "degraded" || res.DB != "ok" || res.ActiveChains != 2 || res.ContractVersion != "1.3.0" {
 		t.Errorf("unexpected health: %+v", res)
-	}
-	// The sidekiq section is the only thing that says WHY the status is degraded.
-	if res.Sidekiq == nil {
-		t.Fatal("sidekiq must be decoded when the gateway reports it")
-	}
-	if res.Sidekiq.Status != "degraded" || res.Sidekiq.Redis != "ok" || res.Sidekiq.Enqueued != 12 {
-		t.Errorf("unexpected sidekiq: %+v", res.Sidekiq)
 	}
 }
 
-// An anonymous caller gets liveness only: the session-gated detail is absent, and
-// Sidekiq stays nil rather than looking like a reported-but-empty fleet.
-func TestHealth_AnonymousResponseOmitsGatedDetail(t *testing.T) {
-	mt := &mockTransport{t: t}
-	mt.push(jsonResp(200, map[string]any{
-		"status": "ok", "db": "ok", "timestamp": "2026-01-01T00:00:00Z",
-	}))
-	client := newMockClient(t, mt)
-
-	res, err := client.Health.Get(context.Background())
+// The body is token-blind: the worker-fleet detail moved to the operator-only
+// /admin/health (#289), so the type must not carry a field that can only decode as
+// nil. Re-encoding the response must not resurrect a `sidekiq` key either.
+func TestHealth_CarriesNoWorkerFleetDetail(t *testing.T) {
+	b, err := json.Marshal(rail0.HealthResponse{Status: "ok"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != "ok" || res.DB != "ok" {
-		t.Errorf("unexpected health: %+v", res)
-	}
-	if res.Sidekiq != nil {
-		t.Errorf("Sidekiq must be nil when not reported, got %+v", res.Sidekiq)
+	if strings.Contains(string(b), "sidekiq") {
+		t.Errorf("HealthResponse still carries the fleet detail: %s", b)
 	}
 }
 

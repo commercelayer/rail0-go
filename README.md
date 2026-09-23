@@ -147,17 +147,13 @@ tokens, _ := client.Tokens.List(ctx, rail0.ListTokensParams{ChainID: 8453}) // G
 ```go
 h, _ := client.Health.Get(ctx) // GET /health
 fmt.Println(h.Status, h.ActiveChains)
-if h.Sidekiq != nil { // authenticated calls only — see below
-    fmt.Println(h.Sidekiq.Status, h.Sidekiq.Processes, h.Sidekiq.Enqueued)
-}
 ```
 
-The endpoint is public, but only `Status`, `DB` and `Timestamp` come back to an
-anonymous caller: `APIVersion`, `ContractVersion`, `ActiveChains`,
-`ActiveContracts` and `Sidekiq` are session-gated, so set a token on the client
-first or they arrive zero-valued (`Sidekiq` nil). `Status` is `"ok"`,
-`"degraded"` (database fine, workers not — `Sidekiq` says why) or `"error"`
-(database down, the only case that also returns HTTP 503).
+The endpoint is public and token-blind: every caller gets the same body, whether or
+not the client carries a session. `Status` is `"ok"`, `"degraded"` (database fine,
+workers not — the only thing that produces it) or `"error"` (database down, the
+only case that also returns HTTP 503). The worker-fleet detail is operator-only, on
+the gateway's `/admin/health`, and is not part of this SDK.
 
 ## Wallets (under accounts, JWT)
 
