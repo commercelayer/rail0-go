@@ -237,7 +237,7 @@ func (s *WebhooksService) putAction(ctx context.Context, id, action string) (*We
 type ListEventCallbacksParams struct {
 	Status       string // filter by delivery status ("delivered" or "failed" — no row is ever pending)
 	Topic        string // filter by event topic
-	PaymentID    string // filter by the payment the delivery is for (its UUID)
+	PaymentID    string // filter by the payment the delivery is for (its UUID or 0x rail0_id)
 	ResponseCode string // filter by the subscriber's exact HTTP response code (e.g. "500")
 	Since        string // only deliveries at/after this ISO-8601 time
 	Until        string // only deliveries at/before this ISO-8601 time
