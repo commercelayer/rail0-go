@@ -153,7 +153,9 @@ The endpoint is public and token-blind: every caller gets the same body, whether
 not the client carries a session. `Status` is `"ok"`, `"degraded"` (database fine,
 workers not — the only thing that produces it) or `"error"` (database down, the
 only case that also returns HTTP 503). The worker-fleet detail is operator-only, on
-the gateway's `/admin/health`, and is not part of this SDK.
+the gateway's `/admin/health`, and is not part of this SDK. On that 503, `Get` returns the
+report **and** the `*APIError`: checking `err` alone still treats it as a failure, and the
+report says what failed (it used to be dropped, leaving an error that read "HTTP 503").
 
 ## Wallets (under accounts, JWT)
 

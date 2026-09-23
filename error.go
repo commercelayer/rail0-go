@@ -1,6 +1,7 @@
 package rail0
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -34,6 +35,10 @@ type APIError struct {
 	// Retry-After header. Set on a 429 (rate limited) — 0 when the header is absent
 	// or unparseable. The client retries automatically only when RetryOn429 is set.
 	RetryAfter time.Duration
+	// Body is the raw response body. Most error bodies are fully described by the fields
+	// above; it is kept for the endpoints whose ERROR response carries data — GET /health
+	// answers 503 with the full health report when its database is down.
+	Body json.RawMessage
 }
 
 func (e *APIError) Error() string {

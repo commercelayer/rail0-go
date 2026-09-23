@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -852,5 +853,25 @@ func TestListFiltersTheGatewayAcceptsReachTheQuery(t *testing.T) {
 		if got := mt.recorded[i].URL.Query().Get(want.key); got != want.value {
 			t.Errorf("request %d: %s = %q, want %q (query %s)", i, want.key, got, want.value, mt.recorded[i].URL.RawQuery)
 		}
+	}
+}
+
+// A 503 from /health carries the report — the database is down, and that is exactly
+// what a caller needs to read. Get returns it together with the error, instead of an
+// error whose detail was the bare "HTTP 503".
+func TestHealth_503ReturnsTheReportAndTheError(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(503, map[string]any{
+		"status": "error", "db": "error", "timestamp": "2026-01-01T00:00:00Z",
+	}))
+	client := newMockClient(t, mt)
+
+	res, err := client.Health.Get(context.Background())
+	var apiErr *rail0.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 503 {
+		t.Fatalf("err = %v, want the 503 as an *APIError", err)
+	}
+	if res == nil || res.Status != "error" || res.DB != "error" {
+		t.Errorf("report = %+v, want the body's status/db", res)
 	}
 }

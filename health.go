@@ -1,6 +1,11 @@
 package rail0
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+)
 
 // HealthService exposes the gateway liveness/readiness check (public, no auth).
 type HealthService struct {
@@ -27,13 +32,27 @@ type HealthResponse struct {
 	Timestamp       string `json:"timestamp"`
 }
 
-// Get reports gateway health, including database connectivity. The gateway
-// returns HTTP 503 (surfaced as *APIError) when the database is unreachable.
-// Callable without a token; the body is the same with or without one.
+// Get reports gateway health, including database connectivity. Callable without a
+// token; the body is the same with or without one.
+//
+// A 503 is still an answer: the gateway sends it, with the full health report, exactly
+// when its database is down — the one reading a caller most needs to see. So on a 503
+// whose body is a health report, Get returns BOTH that report and the *APIError: the
+// error keeps "unhealthy" an error (a caller checking err alone behaves as before), and
+// the report says what is wrong. It used to return only the error, whose detail was the
+// bare "HTTP 503", and the report was thrown away.
 func (s *HealthService) Get(ctx context.Context) (*HealthResponse, error) {
 	var out HealthResponse
-	if err := s.http.get(ctx, "/health", &out); err != nil {
-		return nil, err
+	err := s.http.get(ctx, "/health", &out)
+	if err == nil {
+		return &out, nil
 	}
-	return &out, nil
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusServiceUnavailable {
+		var report HealthResponse
+		if json.Unmarshal(apiErr.Body, &report) == nil && report.Status != "" {
+			return &report, err
+		}
+	}
+	return nil, err
 }
