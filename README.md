@@ -138,7 +138,7 @@ client.SetToken(resp.Token) // apply a token to an already-built client
 ## Catalog (public)
 
 ```go
-chains, _ := client.Chains.List(ctx)                                      // GET /blockchains
+chains, _ := client.Chains.List(ctx)                                      // GET /blockchains; chains[i].Contract is the active RAIL0 deployment (Address, Version)
 tokens, _ := client.Tokens.List(ctx, rail0.ListTokensParams{ChainID: 8453}) // GET /tokens?chain_id=8453
 ```
 
