@@ -386,3 +386,29 @@ func TestSIWEStatementsArePurposeBound(t *testing.T) {
 		t.Errorf("wallet proof must NOT carry the login statement, got:\n%s", proof.Message)
 	}
 }
+
+// A false on a response is an answer, not an absence. With `,omitempty` the booleans
+// vanished from any re-encoded value — `jq .disputed` read null, an inactive wallet
+// showed no `active` at all — so the generator now emits them unconditionally.
+func TestFalseBooleansSurviveReencoding(t *testing.T) {
+	for _, c := range []struct {
+		value any
+		want  []string
+	}{
+		{rail0.Payment{}, []string{`"disputed":false`, `"escrow_stranded":false`}},
+		{rail0.Transaction{}, []string{`"redrivable":false`}},
+		{rail0.WalletWithTokens{}, []string{`"active":false`}},
+		{rail0.WalletTokenHolding{}, []string{`"active":false`, `"default":false`}},
+		{rail0.Webhook{}, []string{`"active":false`}},
+	} {
+		b, err := json.Marshal(c.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range c.want {
+			if !strings.Contains(string(b), w) {
+				t.Errorf("%T: %s missing from %s", c.value, w, b)
+			}
+		}
+	}
+}

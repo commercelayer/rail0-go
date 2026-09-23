@@ -193,10 +193,16 @@ var mergeInto = map[string]string{
 // because the aligned client hand-maintains an equivalent (often renamed or
 // reshaped) type. Health/Session/Nonce are exposed by the client as
 // HealthResponse/AuthResponse/NonceResponse with hand-tuned fields.
+//
+// Account is hand-maintained in accounts.go for the same reason. AdminContract is
+// skipped because it is admin-only: the SDK tracks the public surface, and the
+// operator's deployment bookkeeping is rail0-admin's concern, not a client's.
 var skipSchemas = map[string]bool{
-	"Health":  true,
-	"Session": true,
-	"Nonce":   true,
+	"Health":        true,
+	"Session":       true,
+	"Nonce":         true,
+	"Account":       true,
+	"AdminContract": true,
 }
 
 // ================================================================
@@ -483,11 +489,20 @@ func fields(schemaName string, props map[string]*Schema, requiredSet map[string]
 			Type:    ft,
 			JSON:    pn,
 			Doc:     prop.Description,
-			Pointer: optional || nullable,
+			Pointer: (optional || nullable) && !neverOmitted(ft),
 		})
 	}
 	return out
 }
+
+// neverOmitted reports whether a field of Go type ft must be serialised even at its
+// zero value. A bool is: every generated type is a gateway RESPONSE, and there
+// `false` is an answer, not an absence. With `,omitempty` a `disputed: false` or an
+// inactive wallet's `active: false` vanished from any re-encoded value — the CLI's
+// JSON output among them — so `jq .disputed` read null and an inactive wallet showed
+// no `active` key at all. Request bodies are hand-written (with *bool where "unset"
+// matters), so this cannot make a request send a false nobody asked for.
+func neverOmitted(ft string) bool { return ft == "bool" }
 
 // buildData converts the OpenAPI schemas into template data, applying the SDK
 // generation conventions (aliases, allOf merging, skips, type overrides).
