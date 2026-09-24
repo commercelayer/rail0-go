@@ -54,7 +54,7 @@ ctx := context.Background()
 // Authenticate (SIWE): this client is now authorized for the gated endpoints.
 key, _ := rail0.HexToPrivateKey("0x…")
 auth, _ := client.Auth.Login(ctx, key, "api.rail0.xyz")
-_ = auth.AccountID // "" for an account-less session; auth.Admin is true only for an operator
+_ = auth.AccountID // "" for an account-less session (auth.Name too); auth.Admin is true only for an operator
 
 // Discover the merchant's wallets (each with its tokens nested) and pick one
 wallets, _ := client.Wallets.List(ctx, auth.AccountID)
@@ -93,6 +93,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Wallets` | Wallet management under `/accounts/:id/wallets` (JWT) |
 | `client.PaymentMethods` | Public discovery of a merchant's accepted wallets/tokens (`GET /payment_methods`, no JWT) |
 | `client.Payments` | Full payment lifecycle |
+| `client.Disputes` | Every dispute across the caller's payments (JWT) |
 | `client.Accounts` | The merchant account's own profile (JWT) |
 | `client.Analytics` | Merchant sales analytics (JWT + account) |
 | `client.Webhooks` | Webhook subscription management (JWT) |
@@ -110,7 +111,10 @@ resp, _ := client.Auth.Verify(ctx, rail0.AuthRequest{
     Signature: "0x...",
 })
 // Verify (and Login) stash resp.Token on this client automatically — the SAME
-// client is now authenticated for the gated endpoints.
+// client is now authenticated for the gated endpoints. The response also carries
+// Address, AccountID and Name ("" for an account-less session), ExpiresAt, and
+// Admin (true only for an account holding the operator grant; visibility only —
+// the gateway re-checks it on every request).
 
 // Or do the whole flow with a raw private key:
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
@@ -356,7 +360,8 @@ client.Payments.Submit(ctx, rail0ID, rail0.OpVoid, rail0.SubmitTransactionReques
 client.Payments.SubmitByHash(ctx, rail0ID, rail0.OpCapture, rail0.SubmitByHashRequest{TransactionHash: "0x..."})
 
 // Transactions for a payment
-txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{Sort: "-submitted_at"})
+// Sort accepts created_at, updated_at, block_number, confirmed_at (any other field is a 422).
+txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{Sort: "-confirmed_at"})
 
 // Redrive a broadcast that was prepared and signed but never landed. Offer this on
 // Transaction.Redrivable — the same predicate the gateway guards the route with — and
@@ -599,7 +604,7 @@ client.Webhooks.Delete(ctx, wh.ID)
 
 Topics: `payments.created`, `payments.signed`, `payments.authorized`,
 `payments.charged`, `payments.captured`, `payments.voided`,
-`payments.released`, `payments.refunded`, `payments.failed`,
+`payments.released`, `payments.refunded`, `payments.expired`, `payments.failed`,
 `payments.disputed`, `payments.dispute_closed`
 (also available as `rail0.TopicPayments*` constants).
 
@@ -742,7 +747,7 @@ go build ./...
 > go run gen/generate.go
 > ```
 >
-> The client method files (`auth.go`, `payments.go`, `wallets.go`,
+> The client method files (`auth.go`, `accounts.go`, `payments.go`, `disputes.go`, `wallets.go`,
 > `payment_methods.go`, `webhooks.go`, `analytics.go`, `health.go`, `chains.go`, `tokens.go`),
 > the signing helpers (`signing.go`, `transaction.go`), and the stablecoin
 > registry (`stablecoins.go`) are hand-maintained and never overwritten by the
