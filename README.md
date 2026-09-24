@@ -54,7 +54,7 @@ ctx := context.Background()
 // Authenticate (SIWE): this client is now authorized for the gated endpoints.
 key, _ := rail0.HexToPrivateKey("0x…")
 auth, _ := client.Auth.Login(ctx, key, "api.rail0.xyz")
-_ = auth.AccountID
+_ = auth.AccountID // "" for an account-less session; auth.Admin is true only for an operator
 
 // Discover the merchant's wallets (each with its tokens nested) and pick one
 wallets, _ := client.Wallets.List(ctx, auth.AccountID)
