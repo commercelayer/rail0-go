@@ -161,3 +161,34 @@ func TestAuthRevokeAllKeepsTheTokenWhenRefused(t *testing.T) {
 		t.Errorf("Authorization after a refused RevokeAll = %q, want the session kept", sentAfter)
 	}
 }
+
+// POST /auth carries the account's name on every account session and `admin: true`
+// only on an operator's; a standard session has no admin field and decodes false.
+func TestAuthVerifyDecodesNameAndTheOperatorGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"standard session", `{"token":"t","address":"0xa","account_id":"acc","name":"Ops","expires_at":"x"}`, false},
+		{"admin session", `{"token":"t","address":"0xa","account_id":"acc","name":"Ops","expires_at":"x","admin":true}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			res, err := NewClient(ClientOptions{BaseURL: srv.URL}).Auth.Verify(context.Background(),
+				AuthRequest{Message: "m", Signature: "0xs"})
+			if err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if res.Name != "Ops" || res.Admin != tc.want {
+				t.Errorf("Name = %q, Admin = %v; want %q, %v", res.Name, res.Admin, "Ops", tc.want)
+			}
+		})
+	}
+}

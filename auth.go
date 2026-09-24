@@ -29,11 +29,19 @@ type AuthRequest struct {
 }
 
 // AuthResponse is returned by Verify on success.
+//
+// AccountID and Name are "" for an account-less session (a SIWE-valid address
+// registered to no account, e.g. a buyer). Admin is true only for an account
+// holding the operator (administrators) grant: the gateway sends the field on an
+// admin's session alone, so a standard login decodes as false. Visibility only —
+// every gated route re-checks the grant per request.
 type AuthResponse struct {
 	Token     string `json:"token"`
 	Address   string `json:"address"`
 	AccountID string `json:"account_id"`
+	Name      string `json:"name"`
 	ExpiresAt string `json:"expires_at"`
+	Admin     bool   `json:"admin"`
 }
 
 // LogoutResponse is returned by Logout. `Revoked` is the gateway's answer to the
