@@ -17,7 +17,9 @@ type WebhooksService struct {
 	http *httpClient
 }
 
-// Webhook topics. A webhook subscribes to exactly one topic.
+// Webhook topics. A webhook subscribes to a non-empty SET of them (Topics on
+// CreateWebhookRequest / UpdateWebhookRequest), and two webhooks for the same
+// callback URL may not share one — see CreateWebhookRequest.
 const (
 	TopicPaymentsCreated    = "payments.created"
 	TopicPaymentsSigned     = "payments.signed"
