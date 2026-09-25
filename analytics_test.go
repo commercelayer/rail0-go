@@ -1,8 +1,12 @@
 package rail0
 
 import (
+	"context"
 	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -90,5 +94,59 @@ func TestAnalyticsSummaryDecodesGasAndItsSlices(t *testing.T) {
 		if want, _ := new(big.Int).SetString(sum.Gas[0].Spent, 10); total.Cmp(want) != 0 {
 			t.Errorf("%s sums to %s, want the chain's %s", name, total, want)
 		}
+	}
+}
+
+// Payee narrows the rollups to one of the account's wallets and must reach the gateway on
+// all three endpoints — it rides on the shared AnalyticsFilters, so a call that dropped it
+// would silently report the whole account while the caller believes it sees one wallet.
+// Empty stays off the wire: absent is what means "every wallet the account owns".
+func TestAnalyticsPayeeFilterIsSentOnEveryEndpoint(t *testing.T) {
+	const payee = "0x1111111111111111111111111111111111111111"
+	queries := map[string]url.Values{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries[r.URL.Path] = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/analytics/summary" {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt"})
+	ctx := context.Background()
+	f := AnalyticsFilters{Payee: payee, ChainID: 8453}
+
+	if _, err := c.Analytics.Summary(ctx, f); err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if _, err := c.Analytics.Timeseries(ctx, TimeseriesParams{AnalyticsFilters: f}); err != nil {
+		t.Fatalf("Timeseries: %v", err)
+	}
+	if _, err := c.Analytics.Breakdown(ctx, BreakdownParams{AnalyticsFilters: f, By: "token"}); err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+
+	for _, path := range []string{"/analytics/summary", "/analytics/timeseries", "/analytics/breakdown"} {
+		q, ok := queries[path]
+		if !ok {
+			t.Fatalf("%s was not called", path)
+		}
+		if got := q.Get("payee"); got != payee {
+			t.Errorf("%s payee = %q, want %q", path, got, payee)
+		}
+		if got := q.Get("chain_id"); got != "8453" {
+			t.Errorf("%s chain_id = %q, want 8453 alongside payee", path, got)
+		}
+	}
+
+	// Unset: no payee param at all, so the gateway keeps scoping to the whole account.
+	if _, err := c.Analytics.Summary(ctx); err != nil {
+		t.Fatalf("Summary without filters: %v", err)
+	}
+	if _, present := queries["/analytics/summary"]["payee"]; present {
+		t.Error("payee sent without a Payee filter, want it absent")
 	}
 }
