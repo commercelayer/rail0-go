@@ -10,7 +10,8 @@ import (
 // Every endpoint requires a JWT bound to a non-null account (a merchant session):
 // the gateway answers 401 without a token and 403 for an account-less (buyer)
 // session, and always scopes results to the account's own wallets as payee — a
-// merchant only ever sees its own sales. Reads are aggregate (counts / SUMs), not
+// merchant only ever sees its own sales. AnalyticsFilters.Payee narrows that further
+// to a single one of those wallets. Reads are aggregate (counts / SUMs), not
 // payment records.
 //
 // Amounts are token base-unit integer strings and are only ever summed WITHIN a
@@ -25,6 +26,9 @@ type AnalyticsService struct {
 // timestamps (e.g. "2026-01-01T00:00:00Z"). Token is a 0x token address and, paired
 // with ChainID, is what unlocks per-bucket volume in Timeseries (a single token is
 // summable). Status must be one of the payment states; Mode is "authorize"/"charge".
+// Payee is a 0x wallet address that must be one of the session account's own wallets:
+// the gateway answers 403 for any other address and 400 for a malformed one. Empty
+// means the whole account (every wallet it owns).
 type AnalyticsFilters struct {
 	Mode    string // "authorize" | "charge"
 	Status  string // a payment status (e.g. "captured")
@@ -32,6 +36,7 @@ type AnalyticsFilters struct {
 	ChainID int    // chain id; 0 = no filter
 	From    string // ISO-8601: only payments created at/after this time
 	To      string // ISO-8601: only payments created at/before this time
+	Payee   string // wallet address (0x…) — scopes to one of the account's wallets
 }
 
 // apply writes the set filters onto a url.Values query.
@@ -53,6 +58,9 @@ func (f AnalyticsFilters) apply(q url.Values) {
 	}
 	if f.To != "" {
 		q.Set("to", f.To)
+	}
+	if f.Payee != "" {
+		q.Set("payee", f.Payee)
 	}
 }
 

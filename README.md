@@ -426,6 +426,11 @@ payee — a merchant only ever sees its own sales. Every endpoint needs a JWT bo
 a non-null account (401 without a token, 403 for an account-less buyer session).
 Reads are aggregates (counts / SUMs), not payment records.
 
+Every call takes the optional `Payee` filter to narrow the rollups to **one** of the
+account's wallets instead of all of them. It must be a 0x address the account owns: the
+gateway answers 403 for any other wallet and 400 for a malformed address. Leave it empty
+for the whole account.
+
 Amounts are token base-unit integer strings and are only summed **within** a single
 `(token, chain)` — different tokens are never added together, so per-token volume
 comes with its `Decimals` for display.
@@ -437,6 +442,10 @@ sum, _ := client.Analytics.Summary(ctx, rail0.AnalyticsFilters{
     Mode: "charge", From: "2026-01-01T00:00:00Z", To: "2026-02-01T00:00:00Z",
 })
 fmt.Println(sum.Orders, sum.RefundRate, sum.ByStatus["captured"])
+
+// The same KPIs for just one of the account's wallets (403 if the account does not own it).
+one, _ := client.Analytics.Summary(ctx, rail0.AnalyticsFilters{Payee: "0x…"})
+fmt.Println(one.Orders)
 for _, v := range sum.Volume {
     // Settled/Escrowed say where the money is now (mirrored on-chain residuals);
     // Captured/Refunded say what happened (confirmed transactions).
