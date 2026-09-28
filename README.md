@@ -372,6 +372,8 @@ tx, _ := client.Payments.Redrive(ctx, rail0ID, "019f8a3d-…")
 
 ### Disputes
 
+> **Operations go through the gateway.** The gateway mirrors only the operations it prepared. A dispute, close-dispute, capture, void, refund or release sent to the RAIL0 contract directly — outside this SDK's prepare/submit calls — happens on-chain, but the payment's status and balances on the gateway do not change and no webhook is sent; a merchant is not told about a dispute its buyer opened that way. The gateway records it for its operators as a sync error (`external_operation`).
+
 Disputes are payer-driven and signal-only (they never move funds). They follow
 the same prepare → submit lifecycle as the other operations: prepare returns a
 pending `Transaction` with the unsigned tx, the payer signs it, and Submit
