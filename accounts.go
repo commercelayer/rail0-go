@@ -7,13 +7,13 @@ import (
 
 // AccountsService reads and edits the merchant account itself (requires JWT).
 //
-// Get and Update are the whole surface by design: the gateway's
-// /accounts/{account_id} is behind an ownership guard — a JWT whose account
-// matches the path — so a caller can only ever read or change its OWN account.
-// There is no endpoint for another merchant's, and an id that is not an account
-// answers 404 exactly as another account's id does, so the pair cannot be used
-// to tell whether an account exists. Activating or deactivating an account is
-// an operator action and is deliberately not exposed here.
+// Get and Update are the whole surface by design. The gateway's
+// /accounts/{account_id} is behind an owner-or-operator guard: a merchant
+// session reaches only its OWN account, and an operator (an admin session) may
+// reach any. For anyone else, another account's id answers the same 403 as a
+// plain ownership miss, so the pair cannot be used to tell whether an account
+// exists. Activating or deactivating an account is an operator action and is
+// deliberately not exposed here.
 //
 // The account's wallets are a collection under the same path and live on
 // WalletsService; buyer-facing discovery of what a merchant accepts lives on
