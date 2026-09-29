@@ -94,7 +94,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.PaymentMethods` | Public discovery of a merchant's accepted wallets/tokens (`GET /payment_methods`, no JWT) |
 | `client.Payments` | Full payment lifecycle |
 | `client.Disputes` | Every dispute across the caller's payments (JWT) |
-| `client.Accounts` | The merchant account's own profile (JWT) |
+| `client.Accounts` | The merchant account's own profile: read and update (JWT) |
 | `client.Analytics` | Merchant sales analytics (JWT + account) |
 | `client.Webhooks` | Webhook subscription management (JWT) |
 
@@ -419,7 +419,18 @@ for _, d := range all.Data {
 // exactly as another account's id does, so the pair says nothing about existence.
 me, _ := client.Accounts.Get(ctx, accountID)
 fmt.Println(me.Name, me.Email)
+
+// Change the display name and/or contact email. Both optional, at least one required
+// (an empty request is a 400 validation_failed); unset fields stay off the wire.
+me, err := client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
+    Email: "ops@example.com",
+})
 ```
+
+`Update` edits only the holder's own profile. Name and email are each unique across
+accounts, so one already taken answers `409` (`conflict`). A deactivated account or
+signed-in wallet answers `403` `account_deactivated` / `wallet_deactivated`. The
+account's `active` flag is an operator action and is not exposed by the SDK.
 
 ## Analytics (JWT + account)
 
@@ -610,8 +621,21 @@ rotated, _ := client.Webhooks.RotateSecret(ctx, wh.ID) // rotated.SharedSecret
 // Delivery attempts
 cbs, _ := client.Webhooks.EventCallbacks(ctx, wh.ID, rail0.ListEventCallbacksParams{Status: "failed"})
 
+// Replay a recorded attempt's exact payload (202, delivered asynchronously)
+res, _ := client.Webhooks.Redeliver(ctx, wh.ID, cbs.Data[0].ID) // res.Status == "queued"
+
 client.Webhooks.Delete(ctx, wh.ID)
 ```
+
+**Recovering missed deliveries.** Every event callback stores the payload it sent, so
+`Redeliver` can replay one after the endpoint was down or the circuit opened. The replay
+is the same payload verbatim, with the same embedded event id so a consumer that already
+processed it can deduplicate, under a fresh timestamped signature. The gateway only
+*queues* it: delivery runs through the normal dispatcher (SSRF checks, retries, circuit
+accounting), and a **disabled webhook, including one whose circuit opened, drops the
+replay**. Call `Enable` or `ResetCircuit` first, then watch `EventCallbacks` for the new
+attempt. A callback recorded before payloads were stored has nothing to replay and
+answers `404`.
 
 Topics: `payments.created`, `payments.signed`, `payments.authorized`,
 `payments.charged`, `payments.captured`, `payments.voided`,
