@@ -383,11 +383,13 @@ func (s *PaymentsService) Void(ctx context.Context, paymentID Bytes32, params Su
 	return s.Submit(ctx, paymentID, OpVoid, params)
 }
 
-// ReleasePrepare builds the unsigned release() transaction. from is optional and
-// overrides the submitter address (defaults to the payer when empty). Returns the
-// uncaptured escrow to the payer; the payment closes as "released" only on a total
-// release (an untouched authorization — nothing captured, nothing refundable),
-// otherwise its status is left unchanged so any refundable residual stays actionable.
+// ReleasePrepare builds the unsigned release() transaction for from, whose nonce it
+// carries. from must be the payment's payer or payee (the gateway answers 422
+// release_submitter_not_a_party otherwise); empty builds it for the signed-in caller.
+// Returns the uncaptured escrow to the payer; the payment closes as "released" only
+// on a total release (an untouched authorization — nothing captured, nothing
+// refundable), otherwise its status is left unchanged so any refundable residual
+// stays actionable.
 func (s *PaymentsService) ReleasePrepare(ctx context.Context, paymentID Bytes32, from string) (*Transaction, error) {
 	return s.Prepare(ctx, paymentID, OpRelease, PrepareRequest{From: from})
 }

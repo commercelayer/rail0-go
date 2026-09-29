@@ -27,7 +27,8 @@ type PayerSignatureRequest struct {
 //   - Amount is required for capture and refund — a human decimal (e.g. "10.50");
 //     the gateway converts to token base units.
 //   - Signature is the payee's EIP-3009 signature, required for refund phase-2.
-//   - From overrides the submitter address (release; defaults to the payer).
+//   - From is the release submitter — the payer or the payee; empty means the
+//     signed-in caller.
 //
 // Omit Signature on the refund prepare call to receive the EIP-3009 signing
 // payload (refund phase-1) instead of an unsigned transaction.

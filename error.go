@@ -133,9 +133,10 @@ var errorHints = map[string]string{
 	"no_active_contract":         "no active RAIL0 contract on that chain",
 	"missing_param":              "a required parameter is missing from the request",
 	// A BARE forbidden is not a party mismatch: the gateway split those into codes of
-	// their own (not_the_payee, not_the_payer, wallet_deactivated, not_your_account)
-	// because they need different fixes. This entry kept describing one of them long
-	// after the split — and the rule it named no longer exists in the gateway at all.
+	// their own (not_the_payee, not_the_payer, wallet_deactivated, account_deactivated,
+	// not_your_account) because they need different fixes. This entry kept describing
+	// one of them long after the split — and the rule it named no longer exists in the
+	// gateway at all.
 	"forbidden":              "not permitted for this session — typically the operator grant, a resource owned by another account, or a transaction signed by the wrong wallet",
 	"payment_already_exists": "a payment with this id already exists on-chain",
 }
