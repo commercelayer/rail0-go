@@ -3,6 +3,7 @@ package rail0
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestToBaseUnits(t *testing.T) {
@@ -26,6 +27,9 @@ func TestToBaseUnits(t *testing.T) {
 		{"abc", 6, "", true},
 		{"-1", 6, "", true},
 		{"1", -1, "", true},
+		{"1", 78, "1" + strings.Repeat("0", 78), false}, // the uint256 digit count is the bound
+		{"1", 79, "", true},                             // one past it is refused
+		{"1", 100000000, "", true},                      // a hostile value errors, never allocates
 	}
 	for _, c := range cases {
 		got, err := ToBaseUnits(c.human, c.decimals)
@@ -56,7 +60,11 @@ func TestFormatAmount(t *testing.T) {
 		{"1234567", 6, "1.234567"},
 		{"1500000000000000000", 18, "1.5"},
 		{"10", 0, "10"},
-		{"notanumber", 6, "notanumber"}, // returned unchanged
+		{"notanumber", 6, "notanumber"},                 // returned unchanged
+		{"1", 78, "0." + strings.Repeat("0", 77) + "1"}, // the uint256 digit count is the bound
+		{"1500000", 79, "1500000"},                      // past it: the raw base value
+		{"1500000", -1, "1500000"},                      // negative: the raw base value
+		{" 15 ", 100, " 15 "},                           // unchanged means unchanged, untrimmed
 	}
 	for _, c := range cases {
 		if got := FormatAmount(c.base, c.decimals); got != c.want {
@@ -117,5 +125,21 @@ func TestNotReleasableHintIsAboutTheBalanceNotTheWindow(t *testing.T) {
 	}
 	if !strings.Contains(h, "capturable") {
 		t.Errorf("not_releasable hint should name the capturable balance: %q", h)
+	}
+}
+
+// A gateway answering an absurd decimals must not hang the caller: FormatAmount used to
+// pad one zero per loop iteration up to decimals, so 100000000 spun for minutes. The
+// bound makes it return the raw value at once.
+func TestFormatAmountHostileDecimalsReturnsPromptly(t *testing.T) {
+	done := make(chan string, 1)
+	go func() { done <- FormatAmount("1500000", 100000000) }()
+	select {
+	case got := <-done:
+		if got != "1500000" {
+			t.Errorf("FormatAmount with hostile decimals = %q, want the raw base value", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FormatAmount with hostile decimals did not return")
 	}
 }
