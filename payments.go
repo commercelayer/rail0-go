@@ -2,7 +2,6 @@ package rail0
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -185,7 +184,7 @@ func (s *PaymentsService) CreatePayment(ctx context.Context, params CreatePaymen
 // Get fetches the current payment state, including its embedded transactions.
 func (s *PaymentsService) Get(ctx context.Context, paymentID Bytes32) (*Payment, error) {
 	var out Payment
-	if err := s.http.get(ctx, "/payments/"+paymentID, &out); err != nil {
+	if err := s.http.get(ctx, pathf("/payments/%s", paymentID), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -229,7 +228,7 @@ type ListTransactionsParams struct {
 // Transactions lists on-chain transactions for a payment. Like Payments.List,
 // the gateway returns a bare JSON array with pagination in response headers.
 func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, params ...ListTransactionsParams) (*PaginatedResponse[Transaction], error) {
-	path := fmt.Sprintf("/payments/%s/transactions", paymentID)
+	path := pathf("/payments/%s/transactions", paymentID)
 	if len(params) > 0 {
 		p := params[0]
 		q := url.Values{}
@@ -277,7 +276,7 @@ func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, p
 // answers 404 rather than redriving someone else's row.
 func (s *PaymentsService) Redrive(ctx context.Context, paymentID Bytes32, transactionID string) (*Transaction, error) {
 	var out Transaction
-	path := fmt.Sprintf("/payments/%s/transactions/%s/redrive", paymentID, transactionID)
+	path := pathf("/payments/%s/transactions/%s/redrive", paymentID, transactionID)
 	if err := s.http.post(ctx, path, struct{}{}, &out); err != nil {
 		return nil, err
 	}
@@ -287,7 +286,7 @@ func (s *PaymentsService) Redrive(ctx context.Context, paymentID Bytes32, transa
 // Sign deposits the payer's EIP-712 signature (PUT /payments/{id}/sign).
 func (s *PaymentsService) Sign(ctx context.Context, paymentID Bytes32, params PayerSignatureRequest) (*Payment, error) {
 	var out Payment
-	if err := s.http.put(ctx, "/payments/"+paymentID+"/sign", params, &out); err != nil {
+	if err := s.http.put(ctx, pathf("/payments/%s/sign", paymentID), params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -321,7 +320,7 @@ func (s *PaymentsService) PrepareWithKey(ctx context.Context, paymentID Bytes32,
 	if len(req) > 0 {
 		body = req[0]
 	}
-	path := fmt.Sprintf("/payments/%s/%s/prepare", paymentID, op)
+	path := pathf("/payments/%s/%s/prepare", paymentID, op)
 	if idempotencyKey != "" {
 		headers := map[string]string{"Idempotency-Key": idempotencyKey}
 		if err := s.http.postWithHeaders(ctx, path, body, &out, headers); err != nil {
@@ -345,7 +344,7 @@ func (s *PaymentsService) PrepareWithKey(ctx context.Context, paymentID Bytes32,
 // malformed or foreign transaction id all answer 404 alike.
 func (s *PaymentsService) GetTransaction(ctx context.Context, paymentID Bytes32, transactionID string) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.get(ctx, fmt.Sprintf("/payments/%s/transactions/%s", paymentID, transactionID), &out); err != nil {
+	if err := s.http.get(ctx, pathf("/payments/%s/transactions/%s", paymentID, transactionID), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -355,7 +354,7 @@ func (s *PaymentsService) GetTransaction(ctx context.Context, paymentID Bytes32,
 // (POST /payments/{id}/{op}); the gateway acknowledges with HTTP 202.
 func (s *PaymentsService) Submit(ctx context.Context, paymentID Bytes32, op string, params SubmitTransactionRequest) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.post(ctx, fmt.Sprintf("/payments/%s/%s", paymentID, op), params, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/payments/%s/%s", paymentID, op), params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -365,7 +364,7 @@ func (s *PaymentsService) Submit(ctx context.Context, paymentID Bytes32, op stri
 // (MetaMask eth_sendTransaction) for an operation (POST /payments/{id}/{op}/submitted); HTTP 202.
 func (s *PaymentsService) SubmitByHash(ctx context.Context, paymentID Bytes32, op string, params SubmitByHashRequest) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.post(ctx, fmt.Sprintf("/payments/%s/%s/submitted", paymentID, op), params, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/payments/%s/%s/submitted", paymentID, op), params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -477,13 +476,13 @@ func disputeBody(reason ...string) map[string]any {
 // exactly 64 hex digits (right-pad a short code — "0x01" and friends are rejected
 // with a 400). Omit it and the gateway defaults to the zero bytes32.
 func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/prepare", "", reason...)
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/prepare", paymentID), "", reason...)
 }
 
 // DisputePrepareWithKey is DisputePrepare with an Idempotency-Key. Pass "" to omit
 // the header. See PrepareWithKey for what the key buys.
 func (s *PaymentsService) DisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason ...string) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/prepare", idempotencyKey, reason...)
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/prepare", paymentID), idempotencyKey, reason...)
 }
 
 // disputePrepareWithKey is the one body both dispute prepares share, so the pair
@@ -507,7 +506,7 @@ func (s *PaymentsService) disputePrepareWithKey(ctx context.Context, path, idemp
 // Dispute submits the signed dispute transaction (payer only).
 func (s *PaymentsService) Dispute(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute", params, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/payments/%s/dispute", paymentID), params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -518,18 +517,18 @@ func (s *PaymentsService) Dispute(ctx context.Context, paymentID Bytes32, params
 // reason follows the same rule as DisputePrepare: a full bytes32 ("0x" + 64 hex
 // digits) when given, zero by default.
 func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason ...string) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/close/prepare", "", reason...)
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/close/prepare", paymentID), "", reason...)
 }
 
 // CloseDisputePrepareWithKey is CloseDisputePrepare with an Idempotency-Key.
 func (s *PaymentsService) CloseDisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason ...string) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, "/payments/"+paymentID+"/dispute/close/prepare", idempotencyKey, reason...)
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/close/prepare", paymentID), idempotencyKey, reason...)
 }
 
 // CloseDispute submits the signed close-dispute transaction (payer only).
 func (s *PaymentsService) CloseDispute(ctx context.Context, paymentID Bytes32, params SubmitTransactionRequest) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close", params, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/payments/%s/dispute/close", paymentID), params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -542,7 +541,7 @@ func (s *PaymentsService) CloseDispute(ctx context.Context, paymentID Bytes32, p
 // token is fine), since the bare hash carries no signature to authorize it.
 func (s *PaymentsService) DisputeSubmitByHash(ctx context.Context, paymentID Bytes32, params SubmitByHashRequest) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/submitted", params, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/payments/%s/dispute/submitted", paymentID), params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -553,7 +552,7 @@ func (s *PaymentsService) DisputeSubmitByHash(ctx context.Context, paymentID Byt
 // Payer-only, same contract as DisputeSubmitByHash.
 func (s *PaymentsService) CloseDisputeSubmitByHash(ctx context.Context, paymentID Bytes32, params SubmitByHashRequest) (*Transaction, error) {
 	var out Transaction
-	if err := s.http.post(ctx, "/payments/"+paymentID+"/dispute/close/submitted", params, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/payments/%s/dispute/close/submitted", paymentID), params, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -570,7 +569,7 @@ type ListDisputesParams struct {
 // Disputes lists a payment's dispute open/close history. The gateway paginates
 // this endpoint (bare-array body with pagination in response headers).
 func (s *PaymentsService) Disputes(ctx context.Context, paymentID Bytes32, params ...ListDisputesParams) (*PaginatedResponse[Dispute], error) {
-	path := "/payments/" + paymentID + "/disputes"
+	path := pathf("/payments/%s/disputes", paymentID)
 	if len(params) > 0 {
 		p := params[0]
 		q := url.Values{}

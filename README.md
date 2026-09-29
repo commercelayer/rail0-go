@@ -98,6 +98,8 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Analytics` | Merchant sales analytics (JWT + account) |
 | `client.Webhooks` | Webhook subscription management (JWT) |
 
+Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
+
 ## Authentication (SIWE)
 
 ```go
@@ -624,6 +626,8 @@ rail0.FormatAmount("1500000", 6)      // "1.5"     (trailing zeros trimmed)
 ```
 
 More fractional digits than the token has is an **error**, not a truncation: the gateway 422s an amount a token cannot express, so dropping the extra digits would send a different amount than you wrote. A malformed amount errors too.
+
+`decimals` is bounded to `0..78` (78 is the digit count of the uint256 maximum, so no real token exceeds it): `ToBaseUnits` returns an error outside that range, and `FormatAmount` — display-only, with no error to return — gives back the raw base-unit value unchanged. A malicious or broken gateway answering a huge `decimals` therefore cannot make either function hang or allocate without bound.
 
 Which `decimals` to pass comes on the payment itself: `Payment.Decimals` (`*int`)
 is the token's decimals, on list rows, the detail and the payment embedded in
