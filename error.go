@@ -74,11 +74,12 @@ func DescribeError(code string) string { return errorHints[code] }
 // TS SDK (describeError), the admin's locked-action reasons and the CLI's hints.
 var errorHints = map[string]string{
 	// payment-state guards (HTTP 422)
-	"amount_exceeds_capturable":    "amount is above the capturable balance — check capturableAmount on the payment",
-	"amount_exceeds_refundable":    "amount is above the refundable balance — check refundableAmount on the payment",
-	"not_capturable":               "the payment must be 'authorized' or 'partially_captured' to capture",
-	"not_voidable":                 "void is only allowed while 'authorized' with nothing captured — use release for the remainder after a capture",
-	"not_releasable":               "release opens only after authorizationExpiry",
+	"amount_exceeds_capturable": "amount is above the capturable balance — check capturableAmount on the payment",
+	"amount_exceeds_refundable": "amount is above the refundable balance — check refundableAmount on the payment",
+	"not_capturable":            "the payment must be 'authorized' or 'partially_captured' to capture",
+	"not_voidable":              "void is only allowed while 'authorized' with nothing captured — use release for the remainder after a capture",
+	// Not the expiry window (that is authorization_not_expired): nothing uncaptured is left.
+	"not_releasable":               "there is no uncaptured (capturable) balance left to return to the buyer — check capturableAmount on the payment",
 	"not_refundable":               "nothing is refundable — the payment must be charged/captured and within the refund window",
 	"not_signable":                 "the payment must be 'unsigned' to sign",
 	"already_signed":               "the payer signature is already stored — the payee can act now",
@@ -120,6 +121,13 @@ var errorHints = map[string]string{
 	"not_the_payee":     "only the payment's payee can do this — sign in with the merchant's wallet",
 	"not_the_payer":     "only the payment's payer can do this — sign in with the buyer's wallet",
 	"not_a_participant": "only the payer and the payee can see or act on a payment",
+	"not_your_account":  "the session belongs to a different account than the one in the path — use your own account id",
+	// Deactivation blocks money-in and account writes only; reads and the operations that
+	// return funds keep working, so a wind-down is never trapped.
+	"account_deactivated":           "the merchant account is deactivated — void, release and refund still work, but new payments, authorize, charge, capture and account changes are blocked until an operator reactivates it",
+	"wallet_deactivated":            "this wallet is deactivated — it can still read, but cannot act on payments or change the account; reactivate it or sign in with another of the account's wallets",
+	"release_submitter_not_a_party": "from must be the payment's payer or payee — omit it to build the release for the signed-in caller",
+	"payer_must_be_caller":          "the payer must be the signed-in wallet — the buyer creates and authorizes its own payment",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
 	"not_payee":                  "only the merchant (payee) may do this",
 	"not_payer":                  "only the buyer (payer) may do this",
@@ -132,6 +140,12 @@ var errorHints = map[string]string{
 	"unknown_token":              "the token isn't configured on this chain",
 	"no_active_contract":         "no active RAIL0 contract on that chain",
 	"missing_param":              "a required parameter is missing from the request",
+	"validation_failed":          "a parameter is invalid — the error detail names the offending field",
+	"rate_limited":               "rate limit reached — wait for Retry-After (the time left in the window) and retry, or set RetryOn429",
+	"event_not_found":            "the reported transaction mined but did not perform this operation on this payment — nothing moved; check the hash and prepare the operation again",
+	"submission_timeout":         "the transaction was not mined in time and was recorded as failed — if it mines later, re-report its hash via the operation's submitted endpoint",
+	"token_not_accepted":         "this RAIL0 deployment does not accept that token — its allowlist is fixed at deploy time",
+	"not_redrivable":             "only a pending transaction that already holds its signed transaction can be redriven — check Redrivable on the transaction",
 	// A BARE forbidden is not a party mismatch: the gateway split those into codes of
 	// their own (not_the_payee, not_the_payer, wallet_deactivated, account_deactivated,
 	// not_your_account) because they need different fixes. This entry kept describing

@@ -294,6 +294,38 @@ func (s *WebhooksService) EventCallbacks(ctx context.Context, id string, params 
 	return &PaginatedResponse[EventCallback]{Data: data, Meta: pageMetaFromHeaders(hdr)}, nil
 }
 
+// RedeliverResult is the gateway's acknowledgement of a queued redelivery.
+// Status is "queued": the replay is accepted for asynchronous delivery, not yet
+// delivered.
+type RedeliverResult struct {
+	Status string `json:"status"`
+}
+
+// Redeliver replays one recorded delivery attempt's exact payload
+// (POST /webhooks/{id}/event_callbacks/{callback_id}/redeliver, requires JWT).
+//
+// This is the recovery path for events lost while the webhook was failing:
+// every event callback stores the payload it sent, and a replay sends THAT
+// payload verbatim — the same embedded event id, so a consumer that already
+// processed it can deduplicate — under a fresh timestamped signature.
+//
+// The gateway answers 202 once the replay is queued; delivery itself is
+// asynchronous and goes through the normal dispatcher, with the same SSRF
+// checks, retries and circuit-breaker accounting as a first delivery. In
+// particular a disabled webhook (including one whose circuit opened) drops the
+// replay silently, so call Enable or ResetCircuit first. The gateway answers
+// 404 for a webhook or callback that is not the caller's, a malformed callback
+// id, or a callback recorded before payloads were stored (nothing to replay).
+// Watch EventCallbacks for the new attempt to see the outcome.
+func (s *WebhooksService) Redeliver(ctx context.Context, webhookID, callbackID string) (*RedeliverResult, error) {
+	var out RedeliverResult
+	path := fmt.Sprintf("/webhooks/%s/event_callbacks/%s/redeliver", webhookID, callbackID)
+	if err := s.http.post(ctx, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Delete removes a webhook (requires JWT). Returns 204 No Content.
 func (s *WebhooksService) Delete(ctx context.Context, id string) error {
 	return s.http.delete(ctx, "/webhooks/"+id, nil)

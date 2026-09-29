@@ -5,14 +5,15 @@ import (
 	"fmt"
 )
 
-// AccountsService reads the merchant account itself (requires JWT).
+// AccountsService reads and edits the merchant account itself (requires JWT).
 //
-// One method, and that is the whole surface by design: the gateway's
-// /accounts/{account_id} is behind an ownership guard — a JWT whose account
-// matches the path — so a caller can only ever read its OWN account. There is
-// no endpoint for reading another merchant's, and an id that is not an account
-// answers 404 exactly as another account's id does, so the pair cannot be used
-// to tell whether an account exists.
+// Get and Update are the whole surface by design. The gateway's
+// /accounts/{account_id} is behind an owner-or-operator guard: a merchant
+// session reaches only its OWN account, and an operator (an admin session) may
+// reach any. For anyone else, another account's id answers the same 403 as a
+// plain ownership miss, so the pair cannot be used to tell whether an account
+// exists. Activating or deactivating an account is an operator action and is
+// deliberately not exposed here.
 //
 // The account's wallets are a collection under the same path and live on
 // WalletsService; buyer-facing discovery of what a merchant accepts lives on
@@ -38,6 +39,34 @@ type Account struct {
 func (s *AccountsService) Get(ctx context.Context, accountID string) (*Account, error) {
 	var out Account
 	if err := s.http.get(ctx, fmt.Sprintf("/accounts/%s", accountID), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateAccountRequest is the body for AccountsService.Update. Both fields are
+// optional, but at least one must be set: a PATCH with nothing to change is
+// refused with 400 rather than treated as a silent no-op.
+//
+// Name and Email are each unique across accounts, so a value another account
+// already holds answers 409. The account's active flag is operator-only and is
+// intentionally absent.
+type UpdateAccountRequest struct {
+	Name  string `json:"name,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+// Update changes the account's own profile (PATCH /accounts/{account_id}) and
+// returns it as Get would.
+//
+// The gateway answers 400 validation_failed when neither field is set (or the
+// email is malformed), 409 conflict when the name or email is already taken, and 403
+// account_deactivated / wallet_deactivated when the account or the signed-in
+// wallet has been deactivated — a revoked key must not be able to redirect the
+// account's contact email.
+func (s *AccountsService) Update(ctx context.Context, accountID string, req UpdateAccountRequest) (*Account, error) {
+	var out Account
+	if err := s.http.patch(ctx, fmt.Sprintf("/accounts/%s", accountID), req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
