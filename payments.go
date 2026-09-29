@@ -386,10 +386,15 @@ func (s *PaymentsService) Void(ctx context.Context, paymentID Bytes32, params Su
 // ReleasePrepare builds the unsigned release() transaction for from, whose nonce it
 // carries. from must be the payment's payer or payee (the gateway answers 422
 // release_submitter_not_a_party otherwise); empty builds it for the signed-in caller.
-// Returns the uncaptured escrow to the payer; the payment closes as "released" only
-// on a total release (an untouched authorization — nothing captured, nothing
-// refundable), otherwise its status is left unchanged so any refundable residual
-// stays actionable.
+// Returns the uncaptured escrow to the payer. The resulting status depends on what
+// is left:
+//   - a total release, from "authorized" or "expired" (nothing captured), closes the
+//     payment as "released";
+//   - a release that leaves both balances at zero — the captured part was already
+//     fully refunded (e.g. capture 40, refund 40, release 60) — closes it as
+//     "refunded", the same outcome as running the refund last;
+//   - otherwise the status is left unchanged, so any refundable residual stays
+//     refundable and disputable.
 func (s *PaymentsService) ReleasePrepare(ctx context.Context, paymentID Bytes32, from string) (*Transaction, error) {
 	return s.Prepare(ctx, paymentID, OpRelease, PrepareRequest{From: from})
 }

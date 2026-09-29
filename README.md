@@ -297,8 +297,10 @@ UUID **or** its `rail0_id` (the contract's bytes32 id) — the gateway resolves 
 
 Operation outcomes are happy-path: `void` is allowed only before any capture
 (else the contract reverts `AlreadyCaptured`); `release` closes the payment as
-`released` only on a total release (an untouched authorization), otherwise it
-leaves the status unchanged; `refund` closes it as `refunded` only once fully
+`released` on a total release (from `authorized` or `expired`, nothing captured),
+as `refunded` when it leaves both balances at zero (the captured part was already
+fully refunded, e.g. capture 40 → refund 40 → release 60), and otherwise leaves
+the status unchanged; `refund` closes it as `refunded` only once fully
 settled, so a partial refund leaves the status unchanged (the `partially_refunded`
 value is retained only for historical rows).
 
