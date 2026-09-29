@@ -1,6 +1,9 @@
 package rail0
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestToBaseUnits(t *testing.T) {
 	cases := []struct {
@@ -86,5 +89,33 @@ func TestDescribeError(t *testing.T) {
 	e := &APIError{Code: "contract_revert", Reason: "not_payee"}
 	if e.Hint() == "" {
 		t.Error("expected Hint() to fall back to the Reason sub-cause")
+	}
+}
+
+// Every code the gateway's error catalogue defines with an actionable next step should
+// carry a local hint, including the ones the other SDKs already describe.
+func TestDescribeErrorCoversTheGatewayCodes(t *testing.T) {
+	for _, code := range []string{
+		"account_deactivated", "wallet_deactivated", "not_your_account",
+		"release_submitter_not_a_party", "validation_failed", "rate_limited",
+		"event_not_found", "submission_timeout", "token_not_accepted",
+		"payer_must_be_caller", "not_redrivable",
+	} {
+		if DescribeError(code) == "" {
+			t.Errorf("expected a hint for %s", code)
+		}
+	}
+}
+
+// not_releasable means nothing uncaptured is left; the expiry window is a different code
+// (authorization_not_expired). The hint used to conflate the two and sent callers to wait
+// for a window that would never help.
+func TestNotReleasableHintIsAboutTheBalanceNotTheWindow(t *testing.T) {
+	h := DescribeError("not_releasable")
+	if strings.Contains(h, "authorizationExpiry") {
+		t.Errorf("not_releasable hint mentions the expiry window: %q", h)
+	}
+	if !strings.Contains(h, "capturable") {
+		t.Errorf("not_releasable hint should name the capturable balance: %q", h)
 	}
 }
