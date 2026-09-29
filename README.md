@@ -257,6 +257,9 @@ for _, c := range bal.Balances {
 
 Every `PaginatedResponse[T]` carries `Data` and `Meta`. `Meta` is `{Page, PerPage, Total, TotalPages, Links}`.
 
+`Page` is 1-based and bounded to `1..1,000,000`; a value outside that range is refused
+with `400` `validation_failed` rather than clamped. `PerPage` is capped at 100.
+
 `TotalPages` is **zero** for an empty collection — "no pages" is what there are, so a pager rendered off it renders none. `Links` comes from the `Link` header: `First` and `Last` are always present, `Prev` and `Next` only where they exist, and all four are empty when the collection is. The URIs are **relative** (path + query) and resolve against the URL you requested — the gateway emits them that way so they cannot advertise the wrong scheme through a TLS-terminating proxy.
 
 ```go
