@@ -131,6 +131,9 @@ var schemaTypeOverride = map[string]map[string]string{
 		"signing_payload":      "*SigningPayload",
 		"authorization_expiry": "int64",
 		"refund_expiry":        "int64",
+		// Nullable: null when the gateway cannot resolve the token (gateway #367), so
+		// a pointer keeps "unknown" apart from a real 0-decimals token.
+		"decimals": "*int",
 	},
 	"Transaction": {
 		"amount":           "Uint256String",
@@ -143,6 +146,12 @@ var schemaTypeOverride = map[string]map[string]string{
 		// schemas are skipped below and surface as the Topic* string constants, so a
 		// named element type would be undefined.
 		"topics": "[]string",
+	},
+	"BlockchainSettlement": {
+		// Null below the gateway's minimum sample (gateway #365); a pointer keeps
+		// "not measured yet" apart from a real 0.
+		"p50_seconds": "*int",
+		"p90_seconds": "*int",
 	},
 	"EventCallback": {
 		"response_code": "*int",
