@@ -146,6 +146,25 @@ chains, _ := client.Chains.List(ctx)                                      // GET
 tokens, _ := client.Tokens.List(ctx, rail0.ListTokensParams{ChainID: 8453}) // GET /tokens?chain_id=8453
 ```
 
+### Settlement time
+
+Every chain carries `Settlement` — how long an operation has taken to settle **on
+this gateway**: p50/p90 seconds from broadcast to confirmation over the trailing
+`WindowDays`, end-to-end (chain finality plus the gateway/indexer pipeline), so it
+is what a caller polling a payment actually waits for. The object is always
+present; `P50Seconds`/`P90Seconds` are `*int` and **nil** while `SampleSize` is
+below the gateway's minimum sample (20). Use it as a wait-deadline hint — a small
+multiple of the p90 — and keep a fixed fallback for nil:
+
+```go
+deadline := 15 * time.Minute // fallback while the chain has too few samples
+if p90 := chain.Settlement.P90Seconds; p90 != nil {
+    deadline = max(3*time.Duration(*p90)*time.Second, time.Minute)
+}
+```
+
+It is a long-window capacity figure, not a live "confirms are slow right now" alarm.
+
 ## Health
 
 ```go
@@ -314,6 +333,22 @@ payments, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{
     Sort:   "-created_at",
 })
 
+// Several statuses in one call: matches ANY of them. Sent as one comma-separated
+// `status=authorized,expired`; Status and Statuses are unioned if both are set.
+open, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{
+    Statuses: []string{"authorized", "expired"},
+})
+
+// Every row (list, detail, and the payment embedded in Disputes.List) carries
+// InFlight: true while one of its transactions is submitting, submitted, or
+// pending with its signed transaction — the balances are about to move, so
+// disable further actions on it. No per-row Payments.Get needed.
+for _, p := range open.Data {
+    if p.InFlight {
+        continue // skip in a bulk capture/void
+    }
+}
+
 // Get (embeds transactions)
 p, _ := client.Payments.Get(ctx, rail0ID)
 
@@ -367,6 +402,10 @@ client.Payments.SubmitByHash(ctx, rail0ID, rail0.OpCapture, rail0.SubmitByHashRe
 // Transactions for a payment
 // Sort accepts created_at, updated_at, block_number, confirmed_at (any other field is a 422).
 txs, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{Sort: "-confirmed_at"})
+// Statuses works here too: what is on its way to the chain, in one call.
+moving, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsParams{
+    Statuses: []string{"submitting", "submitted"},
+})
 
 // Redrive a broadcast that was prepared and signed but never landed. Offer this on
 // Transaction.Redrivable — the same predicate the gateway guards the route with — and
@@ -586,10 +625,21 @@ rail0.FormatAmount("1500000", 6)      // "1.5"     (trailing zeros trimmed)
 
 More fractional digits than the token has is an **error**, not a truncation: the gateway 422s an amount a token cannot express, so dropping the extra digits would send a different amount than you wrote. A malformed amount errors too.
 
-Which `decimals` to pass resolves from a payment's `Token` **together with** its
-`ChainID` — a token address identifies a token only within one chain. Both are on
-every `Payment`, list rows included, so formatting an amount from
-`Payments.List` never needs a per-row `Payments.Get`.
+Which `decimals` to pass comes on the payment itself: `Payment.Decimals` (`*int`)
+is the token's decimals, on list rows, the detail and the payment embedded in
+`Disputes.List` — so rendering `Amount`, `CapturableAmount` and `RefundableAmount`
+needs no `Tokens.List` join and no per-row `Payments.Get`:
+
+```go
+if p.Decimals != nil {
+    fmt.Println(rail0.FormatAmount(p.Amount, *p.Decimals))
+}
+```
+
+`Decimals` is nil only when the gateway cannot resolve the token (a contract it has
+not loaded, a token deleted outright). Fall back to `Tokens.List` then, matching on
+the payment's `Token` **together with** its `ChainID` — a token address identifies a
+token only within one chain.
 
 ## Webhooks (JWT)
 
@@ -644,9 +694,23 @@ answers `404`.
 
 Topics: `payments.created`, `payments.signed`, `payments.authorized`,
 `payments.charged`, `payments.captured`, `payments.voided`,
-`payments.released`, `payments.refunded`, `payments.expired`, `payments.failed`,
-`payments.disputed`, `payments.dispute_closed`
+`payments.released`, `payments.refunded`, `payments.authorization_expiring`,
+`payments.expired`, `payments.failed`, `payments.disputed`, `payments.dispute_closed`
 (also available as `rail0.TopicPayments*` constants).
+
+`payments.authorization_expiring` (`rail0.TopicPaymentsAuthorizationExpiring`) is the
+advance warning of `payments.expired`: the last chance to capture, where
+`payments.expired` says the chance is gone. The gateway sends it **once per
+payment**, `AUTHORIZATION_EXPIRING_NOTICE` seconds (default 24h) before
+`authorization_expiry`, for a payment that can still be captured (`authorized`,
+`partially_captured` or `partially_refunded`) and still holds escrow. It is not a
+status change, and its payload's `transaction` is null.
+
+What to act on rides every delivery's `payment` object, on **every** topic:
+`capturable_amount` (base units left to capture) and `authorization_expiry` (epoch
+seconds) — the same fields as `rail0.Payment.CapturableAmount` and
+`AuthorizationExpiry`. The time left is `authorization_expiry` minus the payload's
+`emitted_at`.
 
 ### Verifying a delivery
 

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // PaymentsService implements the payment lifecycle operations.
@@ -25,23 +26,29 @@ const (
 )
 
 // ListPaymentsParams holds optional query parameters for Payments.List.
+//
+// Status and Statuses both filter by payment status and may be combined: the
+// gateway matches ANY of the listed states (gateway #367), so the SDK sends the
+// union — Status first, then Statuses, blanks and duplicates dropped — as one
+// comma-separated `status=` value. Status alone behaves exactly as before.
 type ListPaymentsParams struct {
-	Status      string // filter by payment status
-	Mode        string // filter by mode ("authorize" or "charge")
-	Payer       string // filter by payer address
-	Payee       string // filter by payee address
-	Token       string // filter by token address
-	Rail0ID     string // filter by the logical on-chain payment id (0x…)
-	ChainID     int    // filter by the payment's chain (resolved via its contract); 0 = no filter
-	Disputed    *bool  // filter by whether an open dispute exists; nil = no filter
-	MinAmount   string // minimum amount in token base units (inclusive)
-	MaxAmount   string // maximum amount in token base units (inclusive)
-	CreatedFrom string // only payments created at/after this ISO-8601 time
-	CreatedTo   string // only payments created at/before this ISO-8601 time
-	Operation   string // only payments carrying at least one transaction with this operation (e.g. "dispute")
-	Sort        string // sort fields: comma-separated, prefix with - for desc
-	Page        int    // page number (1-based); 0 = use server default
-	PerPage     int    // items per page; 0 = use server default
+	Status      string   // filter by one payment status
+	Statuses    []string // filter by several payment statuses (e.g. {"authorized", "expired"}); unioned with Status
+	Mode        string   // filter by mode ("authorize" or "charge")
+	Payer       string   // filter by payer address
+	Payee       string   // filter by payee address
+	Token       string   // filter by token address
+	Rail0ID     string   // filter by the logical on-chain payment id (0x…)
+	ChainID     int      // filter by the payment's chain (resolved via its contract); 0 = no filter
+	Disputed    *bool    // filter by whether an open dispute exists; nil = no filter
+	MinAmount   string   // minimum amount in token base units (inclusive)
+	MaxAmount   string   // maximum amount in token base units (inclusive)
+	CreatedFrom string   // only payments created at/after this ISO-8601 time
+	CreatedTo   string   // only payments created at/before this ISO-8601 time
+	Operation   string   // only payments carrying at least one transaction with this operation (e.g. "dispute")
+	Sort        string   // sort fields: comma-separated, prefix with - for desc
+	Page        int      // page number (1-based); 0 = use server default
+	PerPage     int      // items per page; 0 = use server default
 }
 
 // List returns payments for the authenticated account (requires JWT). The
@@ -53,8 +60,8 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 	if len(params) > 0 {
 		p := params[0]
 		q := url.Values{}
-		if p.Status != "" {
-			q.Set("status", p.Status)
+		if st := statusFilter(p.Status, p.Statuses); st != "" {
+			q.Set("status", st)
 		}
 		if p.Mode != "" {
 			q.Set("mode", p.Mode)
@@ -184,13 +191,39 @@ func (s *PaymentsService) Get(ctx context.Context, paymentID Bytes32) (*Payment,
 	return &out, nil
 }
 
+// statusFilter builds the single `status` query value for the list endpoints
+// that accept several statuses (payments, payment transactions). The gateway
+// takes a comma-separated list and matches any of its values, so the one-value
+// Status field and the Statuses slice are unioned rather than one overriding the
+// other: Status first, then Statuses in order, with blanks and repeats dropped.
+// An empty result means "no status filter" and the caller omits the parameter —
+// the gateway answers 400 on an empty `status=`.
+func statusFilter(one string, many []string) string {
+	seen := make(map[string]bool, len(many)+1)
+	var out []string
+	for _, v := range append([]string{one}, many...) {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return strings.Join(out, ",")
+}
+
 // ListTransactionsParams holds optional query parameters for Payments.Transactions.
+//
+// Status and Statuses combine exactly as on ListPaymentsParams: the union is sent
+// as one comma-separated `status=` value, matching any of them — e.g.
+// Statuses: {"submitting", "submitted"} asks for what is on its way to the chain.
 type ListTransactionsParams struct {
-	Operation string // filter by operation type
-	Status    string // filter by transaction status
-	Sort      string // sort fields: comma-separated, prefix with - for desc
-	Page      int    // page number (1-based); 0 = use server default
-	PerPage   int    // items per page; 0 = use server default
+	Operation string   // filter by operation type
+	Status    string   // filter by one transaction status
+	Statuses  []string // filter by several transaction statuses; unioned with Status
+	Sort      string   // sort fields: comma-separated, prefix with - for desc
+	Page      int      // page number (1-based); 0 = use server default
+	PerPage   int      // items per page; 0 = use server default
 }
 
 // Transactions lists on-chain transactions for a payment. Like Payments.List,
@@ -203,8 +236,8 @@ func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, p
 		if p.Operation != "" {
 			q.Set("operation", p.Operation)
 		}
-		if p.Status != "" {
-			q.Set("status", p.Status)
+		if st := statusFilter(p.Status, p.Statuses); st != "" {
+			q.Set("status", st)
 		}
 		if p.Sort != "" {
 			q.Set("sort", p.Sort)

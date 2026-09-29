@@ -35,6 +35,16 @@ const (
 	TopicPaymentsFailed        = "payments.failed"
 	TopicPaymentsDisputed      = "payments.disputed"
 	TopicPaymentsDisputeClosed = "payments.dispute_closed"
+	// A WARNING, not a transition: an authorization with escrow still capturable
+	// (authorized, partially_captured or partially_refunded, capturable_amount > 0)
+	// is about to lapse — its authorization_expiry falls inside the gateway's notice
+	// window (AUTHORIZATION_EXPIRING_NOTICE, 24h by default). Sent at most once per
+	// payment, while there is still time to capture; the payment's status does not
+	// change, and the payload's `transaction` is null. Seconds left is the payload's
+	// payment.authorization_expiry minus its emitted_at (gateway #366) — not a field
+	// of its own, since it would be stale on every retry.
+	// A window that already closed gets TopicPaymentsExpired instead, never this.
+	TopicPaymentsAuthorizationExpiring = "payments.authorization_expiring"
 )
 
 // Webhook (the webhook subscription shape, including the SharedSecret returned
