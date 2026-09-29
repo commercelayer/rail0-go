@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -187,7 +186,7 @@ func (s *WebhooksService) Create(ctx context.Context, req CreateWebhookRequest) 
 // Get fetches a single webhook (requires JWT).
 func (s *WebhooksService) Get(ctx context.Context, id string) (*Webhook, error) {
 	var out Webhook
-	if err := s.http.get(ctx, "/webhooks/"+id, &out); err != nil {
+	if err := s.http.get(ctx, pathf("/webhooks/%s", id), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -207,7 +206,7 @@ type UpdateWebhookRequest struct {
 // Update patches a webhook (requires JWT).
 func (s *WebhooksService) Update(ctx context.Context, id string, req UpdateWebhookRequest) (*Webhook, error) {
 	var out Webhook
-	if err := s.http.patch(ctx, "/webhooks/"+id, req, &out); err != nil {
+	if err := s.http.patch(ctx, pathf("/webhooks/%s", id), req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -239,7 +238,7 @@ func (s *WebhooksService) ResetCircuit(ctx context.Context, id string) (*Webhook
 // endpoints (enable, disable, rotate_secret, reset_circuit).
 func (s *WebhooksService) putAction(ctx context.Context, id, action string) (*Webhook, error) {
 	var out Webhook
-	if err := s.http.put(ctx, fmt.Sprintf("/webhooks/%s/%s", id, action), nil, &out); err != nil {
+	if err := s.http.put(ctx, pathf("/webhooks/%s/%s", id, action), nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -260,7 +259,7 @@ type ListEventCallbacksParams struct {
 
 // EventCallbacks lists delivery attempts for a webhook (requires JWT).
 func (s *WebhooksService) EventCallbacks(ctx context.Context, id string, params ...ListEventCallbacksParams) (*PaginatedResponse[EventCallback], error) {
-	path := fmt.Sprintf("/webhooks/%s/event_callbacks", id)
+	path := pathf("/webhooks/%s/event_callbacks", id)
 	if len(params) > 0 {
 		p := params[0]
 		q := url.Values{}
@@ -329,7 +328,7 @@ type RedeliverResult struct {
 // Watch EventCallbacks for the new attempt to see the outcome.
 func (s *WebhooksService) Redeliver(ctx context.Context, webhookID, callbackID string) (*RedeliverResult, error) {
 	var out RedeliverResult
-	path := fmt.Sprintf("/webhooks/%s/event_callbacks/%s/redeliver", webhookID, callbackID)
+	path := pathf("/webhooks/%s/event_callbacks/%s/redeliver", webhookID, callbackID)
 	if err := s.http.post(ctx, path, nil, &out); err != nil {
 		return nil, err
 	}
@@ -338,5 +337,5 @@ func (s *WebhooksService) Redeliver(ctx context.Context, webhookID, callbackID s
 
 // Delete removes a webhook (requires JWT). Returns 204 No Content.
 func (s *WebhooksService) Delete(ctx context.Context, id string) error {
-	return s.http.delete(ctx, "/webhooks/"+id, nil)
+	return s.http.delete(ctx, pathf("/webhooks/%s", id), nil)
 }

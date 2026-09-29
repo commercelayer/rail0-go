@@ -2,7 +2,6 @@ package rail0
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 	"strconv"
 )
@@ -36,7 +35,7 @@ type ListWalletsParams struct {
 // List returns the account's wallets, each with its token holdings nested under
 // Tokens (requires JWT).
 func (s *WalletsService) List(ctx context.Context, accountID string, params ...ListWalletsParams) (*PaginatedResponse[WalletWithTokens], error) {
-	path := fmt.Sprintf("/accounts/%s/wallets", accountID)
+	path := pathf("/accounts/%s/wallets", accountID)
 	if len(params) > 0 {
 		p := params[0]
 		q := url.Values{}
@@ -85,7 +84,7 @@ func (s *WalletsService) List(ctx context.Context, accountID string, params ...L
 // or its address. Returns the wallet record (not a wallet-token row).
 func (s *WalletsService) Get(ctx context.Context, accountID, idOrAddress string) (*Wallet, error) {
 	var out Wallet
-	if err := s.http.get(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, idOrAddress), &out); err != nil {
+	if err := s.http.get(ctx, pathf("/accounts/%s/wallets/%s", accountID, idOrAddress), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -111,7 +110,7 @@ type CreateWalletRequest struct {
 // Returns the plain Wallet record (not a wallet-token row).
 func (s *WalletsService) Create(ctx context.Context, accountID string, req CreateWalletRequest) (*Wallet, error) {
 	var out Wallet
-	if err := s.http.post(ctx, fmt.Sprintf("/accounts/%s/wallets", accountID), req, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/accounts/%s/wallets", accountID), req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -127,7 +126,7 @@ type UpdateWalletRequest struct {
 // wallet UUID or its 0x address (unique per account).
 func (s *WalletsService) Update(ctx context.Context, accountID, id string, req UpdateWalletRequest) (*Wallet, error) {
 	var out Wallet
-	if err := s.http.patch(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, id), req, &out); err != nil {
+	if err := s.http.patch(ctx, pathf("/accounts/%s/wallets/%s", accountID, id), req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -136,7 +135,7 @@ func (s *WalletsService) Update(ctx context.Context, accountID, id string, req U
 // Delete removes a wallet (requires JWT). `id` may be the wallet UUID or its 0x
 // address (unique per account). Returns 204 No Content.
 func (s *WalletsService) Delete(ctx context.Context, accountID, id string) error {
-	return s.http.delete(ctx, fmt.Sprintf("/accounts/%s/wallets/%s", accountID, id), nil)
+	return s.http.delete(ctx, pathf("/accounts/%s/wallets/%s", accountID, id), nil)
 }
 
 // AddWalletTokenRequest is the body of AddToken: the (chain, token) pair this wallet
@@ -168,7 +167,7 @@ type AddWalletTokenRequest struct {
 // them. `id` may be the wallet UUID or its 0x address.
 func (s *WalletsService) AddToken(ctx context.Context, accountID, id string, req AddWalletTokenRequest) (*WalletTokenHolding, error) {
 	var out WalletTokenHolding
-	if err := s.http.post(ctx, fmt.Sprintf("/accounts/%s/wallets/%s/tokens", accountID, id), req, &out); err != nil {
+	if err := s.http.post(ctx, pathf("/accounts/%s/wallets/%s/tokens", accountID, id), req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -179,7 +178,7 @@ func (s *WalletsService) AddToken(ctx context.Context, accountID, id string, req
 // A soft delete (204): the holding row survives with active:false and loses `default`,
 // so its history is kept and EnableToken can bring it back.
 func (s *WalletsService) RemoveToken(ctx context.Context, accountID, id, tokenID string) error {
-	return s.http.delete(ctx, fmt.Sprintf("/accounts/%s/wallets/%s/tokens/%s", accountID, id, tokenID), nil)
+	return s.http.delete(ctx, pathf("/accounts/%s/wallets/%s/tokens/%s", accountID, id, tokenID), nil)
 }
 
 // EnableToken re-enables an EXISTING holding (requires JWT). 404 when the wallet has
@@ -199,7 +198,7 @@ func (s *WalletsService) DisableToken(ctx context.Context, accountID, id, tokenI
 // for the same reason.
 func (s *WalletsService) tokenAction(ctx context.Context, accountID, id, tokenID, action string) (*WalletTokenHolding, error) {
 	var out WalletTokenHolding
-	path := fmt.Sprintf("/accounts/%s/wallets/%s/tokens/%s/%s", accountID, id, tokenID, action)
+	path := pathf("/accounts/%s/wallets/%s/tokens/%s/%s", accountID, id, tokenID, action)
 	if err := s.http.patch(ctx, path, nil, &out); err != nil {
 		return nil, err
 	}
@@ -220,7 +219,7 @@ type WalletBalancesParams struct {
 // `id` may be the wallet UUID or its 0x address (unique per account).
 func (s *WalletsService) Balances(ctx context.Context, accountID, id string, params ...WalletBalancesParams) (*WalletBalances, error) {
 	var out WalletBalances
-	path := fmt.Sprintf("/accounts/%s/wallets/%s/balances", accountID, id)
+	path := pathf("/accounts/%s/wallets/%s/balances", accountID, id)
 	if len(params) > 0 {
 		p := params[0]
 		q := url.Values{}

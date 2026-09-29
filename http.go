@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -217,6 +218,9 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any, out 
 // doWithHeaders is the core request loop. extraHeaders are merged over the
 // client's default headers for this single request only.
 func (c *httpClient) doWithHeaders(ctx context.Context, method, path string, body any, out any, extraHeaders map[string]string, respHeader *http.Header) error {
+	if err := checkPathSegments(path); err != nil {
+		return err
+	}
 	url := c.baseURL + path
 	// A retry budget of at least 1 when RetryOn429 is on, so the flag works on its own:
 	// requiring MaxRetries as well made it a silent no-op (see RetryOn429).
@@ -412,4 +416,52 @@ func parseRetryAfter(h http.Header) time.Duration {
 		}
 	}
 	return 0
+}
+
+// pathf builds a request path from a format whose %s verbs each stand for ONE path
+// segment, url.PathEscape-ing every value before it is interpolated:
+//
+//	pathf("/payments/%s/transactions/%s", paymentID, transactionID)
+//
+// Resource methods used to paste caller-supplied ids into the path raw (fmt.Sprintf or
+// string concatenation), and doWithHeaders appends the path to the base URL verbatim, so
+// an id containing '/', '?' or '#' addressed a different route than the method named —
+// Payments.Get(ctx, "x/../../webhooks/y") was a GET on another resource with the caller's
+// own token (a confused deputy). The ids this SDK is handed normally come from the
+// gateway, but a caller that forwards one from a URL or a CLI argument passes along
+// whatever it was given. Escaping keeps each value inside its segment; for the values
+// that are legitimately used (0x hex, UUIDs, operation names) it changes nothing. This
+// mirrors rail0-ts's `path` tagged template (src/core/path.ts).
+//
+// PathEscape leaves "." and ".." (and "") untouched, since they contain nothing to
+// escape; a segment that is exactly one of those would still move the request once a
+// server or proxy normalises dot segments or merges slashes. Those are rejected, not
+// escaped, by checkPathSegments before any request is sent — %2E is decoded back to "."
+// by the normalising layers this guards against, so escaping would not be a guarantee.
+//
+// Query strings are NOT built here: they come from url.Values.Encode and are appended to
+// the result.
+func pathf(format string, segs ...string) string {
+	escaped := make([]any, len(segs))
+	for i, s := range segs {
+		escaped[i] = url.PathEscape(s)
+	}
+	return fmt.Sprintf(format, escaped...)
+}
+
+// checkPathSegments rejects a request path (query string excluded) with an empty, "." or
+// ".." segment. The SDK's own static paths never contain one, so after pathf's escaping
+// such a segment can only come from a caller-supplied id that is empty or exactly "." or
+// "..": sending it would hit a different route (a list endpoint for an empty id, the
+// parent resource once dot segments are resolved). Failing before the request names the
+// bad input instead of acting on the wrong resource.
+func checkPathSegments(path string) error {
+	p, _, _ := strings.Cut(path, "?")
+	p, _, _ = strings.Cut(p, "#")
+	for _, seg := range strings.Split(strings.TrimPrefix(p, "/"), "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("rail0: invalid request path %q: empty, \".\" or \"..\" path segment (an id argument is empty or a dot segment)", p)
+		}
+	}
+	return nil
 }

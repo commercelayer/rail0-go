@@ -2,7 +2,6 @@ package rail0
 
 import (
 	"context"
-	"fmt"
 )
 
 // AccountsService reads and edits the merchant account itself (requires JWT).
@@ -38,7 +37,7 @@ type Account struct {
 // Get returns the account's own profile: id, name, email and timestamps.
 func (s *AccountsService) Get(ctx context.Context, accountID string) (*Account, error) {
 	var out Account
-	if err := s.http.get(ctx, fmt.Sprintf("/accounts/%s", accountID), &out); err != nil {
+	if err := s.http.get(ctx, pathf("/accounts/%s", accountID), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -66,7 +65,7 @@ type UpdateAccountRequest struct {
 // account's contact email.
 func (s *AccountsService) Update(ctx context.Context, accountID string, req UpdateAccountRequest) (*Account, error) {
 	var out Account
-	if err := s.http.patch(ctx, fmt.Sprintf("/accounts/%s", accountID), req, &out); err != nil {
+	if err := s.http.patch(ctx, pathf("/accounts/%s", accountID), req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
