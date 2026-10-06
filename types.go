@@ -1,8 +1,8 @@
 package rail0
 
 // Payment (the full payment record, merged from the OpenAPI Payment and
-// PaymentDetail schemas), Transaction, Wallet, WalletToken, and Error are
-// generated from the gateway OpenAPI schema in types_gen.go.
+// PaymentDetail schemas), Transaction, Wallet, and Error are generated from the
+// gateway OpenAPI schema in types_gen.go.
 
 // CreatePaymentRequest is the flat body for POST /payments.
 type CreatePaymentRequest struct {
