@@ -6,7 +6,7 @@ RAIL0 is an immutable EVM smart contract that brings the authorize → capture �
 
 ## Requirements
 
-Go ≥ 1.25
+Go ≥ 1.26
 
 ## Installation
 
