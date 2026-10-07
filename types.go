@@ -1,8 +1,8 @@
 package rail0
 
 // Payment (the full payment record, merged from the OpenAPI Payment and
-// PaymentDetail schemas), Transaction, Wallet, WalletToken, and Error are
-// generated from the gateway OpenAPI schema in types_gen.go.
+// PaymentDetail schemas), Transaction, Wallet, and Error are generated from the
+// gateway OpenAPI schema in types_gen.go.
 
 // CreatePaymentRequest is the flat body for POST /payments.
 type CreatePaymentRequest struct {
@@ -15,6 +15,17 @@ type CreatePaymentRequest struct {
 	Payee       Address `json:"payee"`
 	Description string  `json:"description,omitempty"`
 	Metadata    *any    `json:"metadata,omitempty"`
+}
+
+// UpdatePaymentRequest is the body for PATCH /payments/{id}. Description is the
+// only mutable field.
+//
+// The key is required by the gateway, so the field has no omitempty: a nil
+// Description is sent as JSON null and, like a pointer to "", clears the stored
+// description. A non-empty value replaces it (max 255 characters — the gateway
+// answers 422 above that).
+type UpdatePaymentRequest struct {
+	Description *string `json:"description"`
 }
 
 // PayerSignatureRequest is the body for PUT /payments/{id}/sign.

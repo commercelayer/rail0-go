@@ -156,9 +156,6 @@ var schemaTypeOverride = map[string]map[string]string{
 	"EventCallback": {
 		"response_code": "*int",
 	},
-	"WalletToken": {
-		"address": "Address",
-	},
 	"Token": {
 		"address": "Address",
 	},

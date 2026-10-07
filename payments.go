@@ -190,6 +190,25 @@ func (s *PaymentsService) Get(ctx context.Context, paymentID Bytes32) (*Payment,
 	return &out, nil
 }
 
+// Update edits a payment's description (PATCH /payments/{id}) and returns the
+// updated payment, in the same shape as Get.
+//
+// Only a participant may call it — the payer or the payee (JWT required): the
+// gateway answers 401 without a session, 404 to a non-participant (the payment's
+// existence is not disclosed) and 403 wallet_deactivated when the caller's wallet
+// is deactivated. It is allowed in any status, since the description is
+// off-chain metadata and never touches the escrow.
+//
+// req.Description == nil (sent as JSON null) or a pointer to "" clears the
+// description; anything else replaces it, up to 255 characters (422 above that).
+func (s *PaymentsService) Update(ctx context.Context, paymentID Bytes32, req UpdatePaymentRequest) (*Payment, error) {
+	var out Payment
+	if err := s.http.patch(ctx, pathf("/payments/%s", paymentID), req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // statusFilter builds the single `status` query value for the list endpoints
 // that accept several statuses (payments, payment transactions). The gateway
 // takes a comma-separated list and matches any of its values, so the one-value

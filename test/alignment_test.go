@@ -81,6 +81,47 @@ func TestPaymentsGet(t *testing.T) {
 	}
 }
 
+func TestPaymentsUpdate(t *testing.T) {
+	desc := "x"
+	cases := []struct {
+		name string
+		req  rail0.UpdatePaymentRequest
+		want string
+	}{
+		{"set", rail0.UpdatePaymentRequest{Description: &desc}, `{"description":"x"}`},
+		// nil must still send the key, as null: the gateway requires it and null clears.
+		{"clear", rail0.UpdatePaymentRequest{}, `{"description":null}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mt := &mockTransport{t: t}
+			mt.push(jsonResp(200, map[string]any{
+				"rail0_id": mockPaymentID, "status": "captured", "description": "x",
+			}))
+			client := newMockClient(t, mt)
+
+			p, err := client.Payments.Update(context.Background(), mockPaymentID, tc.req)
+			if err != nil {
+				t.Fatalf("Payments.Update: %v", err)
+			}
+			if p.Rail0Id != mockPaymentID || p.Status != "captured" || p.Description != "x" {
+				t.Fatalf("unexpected payment: %+v", p)
+			}
+			req := mt.recorded[0]
+			if req.Method != http.MethodPatch {
+				t.Errorf("method: got %s, want PATCH", req.Method)
+			}
+			if req.URL.Path != "/payments/"+mockPaymentID {
+				t.Errorf("path: got %s", req.URL.Path)
+			}
+			body, _ := io.ReadAll(req.Body)
+			if got := strings.TrimSpace(string(body)); got != tc.want {
+				t.Errorf("body: got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSignReceiveWithAuthorization(t *testing.T) {
 	key, err := rail0.HexToPrivateKey(privateKeyHex)
 	if err != nil {
