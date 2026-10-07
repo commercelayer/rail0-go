@@ -354,6 +354,13 @@ for _, p := range open.Data {
 // Get (embeds transactions)
 p, _ := client.Payments.Get(ctx, rail0ID)
 
+// Update the description (requires JWT; payer or payee only, any status).
+// Returns the updated payment, same shape as Get. A nil Description is sent as
+// JSON null and, like "", clears it; max 255 characters (422 above that).
+desc := "Order #1234"
+p, _ = client.Payments.Update(ctx, rail0ID, rail0.UpdatePaymentRequest{Description: &desc})
+p, _ = client.Payments.Update(ctx, rail0ID, rail0.UpdatePaymentRequest{}) // clear
+
 // Create — optional idempotency key replays the existing payment on retry.
 // The key is bound to the request: reusing it with different terms returns
 // a 422 with code "idempotency_key_reused", never the first payment.
