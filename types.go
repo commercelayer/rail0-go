@@ -17,6 +17,17 @@ type CreatePaymentRequest struct {
 	Metadata    *any    `json:"metadata,omitempty"`
 }
 
+// UpdatePaymentRequest is the body for PATCH /payments/{id}. Description is the
+// only mutable field.
+//
+// The key is required by the gateway, so the field has no omitempty: a nil
+// Description is sent as JSON null and, like a pointer to "", clears the stored
+// description. A non-empty value replaces it (max 255 characters — the gateway
+// answers 422 above that).
+type UpdatePaymentRequest struct {
+	Description *string `json:"description"`
+}
+
 // PayerSignatureRequest is the body for PUT /payments/{id}/sign.
 type PayerSignatureRequest struct {
 	// 65-byte secp256k1 signature (0x-prefixed, 132 chars): r (32) + s (32) + v (1).
