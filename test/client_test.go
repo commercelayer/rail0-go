@@ -907,20 +907,56 @@ func TestCloseDisputePrepare_PostsToCorrectURL(t *testing.T) {
 	}
 }
 
-// The gateway answers a missing reason with a 400; the SDK refuses it before the
-// request so the caller gets one typed error for both prepares.
-func TestDisputePrepares_RequireAReason(t *testing.T) {
+// The reason is optional: omitted, empty or blank, both prepares leave `reason` out
+// of the body so the gateway records no reason (the zero bytes32).
+func TestDisputePrepares_OmitAMissingReason(t *testing.T) {
 	mt := &mockTransport{t: t}
+	for i := 0; i < 4; i++ {
+		mt.push(jsonResp(200, mockPrepareResp))
+	}
 	client := newMockClient(t, mt)
+	ctx := context.Background()
 
-	if _, err := client.Payments.DisputePrepare(context.Background(), mockPaymentID, ""); !errors.Is(err, rail0.ErrDisputeReasonRequired) {
-		t.Errorf("DisputePrepare: got %v, want ErrDisputeReasonRequired", err)
+	if _, err := client.Payments.DisputePrepare(ctx, mockPaymentID); err != nil {
+		t.Fatalf("DisputePrepare (no reason): %v", err)
 	}
-	if _, err := client.Payments.CloseDisputePrepareWithKey(context.Background(), mockPaymentID, "k", "  "); !errors.Is(err, rail0.ErrDisputeReasonRequired) {
-		t.Errorf("CloseDisputePrepareWithKey: got %v, want ErrDisputeReasonRequired", err)
+	if _, err := client.Payments.DisputePrepare(ctx, mockPaymentID, ""); err != nil {
+		t.Fatalf("DisputePrepare (empty reason): %v", err)
 	}
-	if len(mt.recorded) != 0 {
-		t.Errorf("no request should be sent, got %d", len(mt.recorded))
+	if _, err := client.Payments.CloseDisputePrepare(ctx, mockPaymentID); err != nil {
+		t.Fatalf("CloseDisputePrepare (no reason): %v", err)
+	}
+	if _, err := client.Payments.CloseDisputePrepareWithKey(ctx, mockPaymentID, "k", "  "); err != nil {
+		t.Fatalf("CloseDisputePrepareWithKey (blank reason): %v", err)
+	}
+	if len(mt.recorded) != 4 {
+		t.Fatalf("requests: got %d, want 4", len(mt.recorded))
+	}
+	for i, req := range mt.recorded {
+		body, _ := io.ReadAll(req.Body)
+		var decoded map[string]any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatalf("request %d: body is not valid JSON: %v", i, err)
+		}
+		if _, ok := decoded["reason"]; ok {
+			t.Errorf("request %d: reason should be omitted, got body %s", i, body)
+		}
+	}
+}
+
+// A dispute opened/closed with no reason carries the zero bytes32, a null code and
+// the gateway's "No reason given" description.
+func TestDispute_DecodesANoReasonDispute(t *testing.T) {
+	zero := "0x" + strings.Repeat("0", 64)
+	var d rail0.Dispute
+	if err := json.Unmarshal([]byte(`{"reason":"`+zero+`","reason_code":null,"reason_description":"No reason given","close_reason":"`+zero+`","close_reason_code":null,"close_reason_description":"No reason given"}`), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Reason != zero || d.ReasonCode != "" || d.ReasonDescription != "No reason given" {
+		t.Errorf("open reason: got %q/%q/%q", d.Reason, d.ReasonCode, d.ReasonDescription)
+	}
+	if d.CloseReason != zero || d.CloseReasonCode != "" || d.CloseReasonDescription != "No reason given" {
+		t.Errorf("close reason: got %q/%q/%q", d.CloseReason, d.CloseReasonCode, d.CloseReasonDescription)
 	}
 }
 

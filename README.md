@@ -436,13 +436,14 @@ broadcasts the signed raw tx. The on-chain event then flips the payment's
 `Disputed` flag.
 
 ```go
-// Open a dispute (payer only). reason is REQUIRED: a DisputeOpenReason code, or
-// exactly that code's bytes32 as rail0.DisputeReason("0x…").
+// Open a dispute (payer only). reason is optional: a DisputeOpenReason code, or
+// exactly that code's bytes32 as rail0.DisputeReason("0x…"). Omit it to open the
+// dispute with no reason: client.Payments.DisputePrepare(ctx, rail0ID).
 tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, rail0.DisputeOpenReasonNotReceived)
 // sign tx.UnsignedTransaction → signedBytes
 client.Payments.Dispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
-// Close a dispute (payer only), with a reason from the CLOSE list
+// Close a dispute (payer only), optionally with a reason from the CLOSE list
 tx, _ = client.Payments.CloseDisputePrepare(ctx, rail0ID, rail0.DisputeCloseReasonWithdrawn)
 client.Payments.CloseDispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
@@ -478,22 +479,30 @@ records on its own:
 
 Each entry is a `DisputeReasonInfo{Code, Description, Bytes32}`, and every code has a
 typed constant (`rail0.DisputeOpenReasonNotReceived`, `rail0.DisputeCloseReasonOther`,
-…). An empty reason fails locally with `rail0.ErrDisputeReasonRequired`; anything
-outside the list is refused by the gateway with HTTP 422 `unknown_dispute_reason`.
-Validate user input before the call with the same rule the gateway applies:
+…). The reason is optional on both prepares: omit it (or pass `""`) and the SDK
+leaves `reason` out of the request; the gateway then puts the zero bytes32 in the
+calldata (it treats an explicit all-zero bytes32 the same way). A supplied value
+outside the right list is refused by the gateway with HTTP 422
+`unknown_dispute_reason`. Validate user input before the call with the same rule the
+gateway applies:
 
 ```go
-info, ok := rail0.LookupDisputeOpenReason(input) // code or bytes32 (any hex case)
-if !ok {
-    // not a code you can open a dispute with — offer rail0.DisputeOpenReasons
+var reasons []rail0.DisputeReason // empty = no reason
+if input != "" {
+    info, ok := rail0.LookupDisputeOpenReason(input) // code or bytes32 (any hex case)
+    if !ok {
+        // not a code you can open a dispute with — offer rail0.DisputeOpenReasons
+    }
+    reasons = append(reasons, info.Code)
 }
-tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, info.Code)
+tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, reasons...)
 ```
 
 A `Dispute` reads its reasons back as `ReasonCode`/`ReasonDescription` and
 `CloseReasonCode`/`CloseReasonDescription` next to the raw bytes32 `Reason` and
-`CloseReason`. A bytes32 outside the dictionary (a direct contract call, or a dispute
-opened before the dictionary existed) keeps its raw value with an empty code and the
+`CloseReason`. A dispute opened or closed with no reason (the zero bytes32) has an
+empty code and the description `"No reason given"`; a non-zero bytes32 outside the
+dictionary (a direct contract call) keeps its raw value with an empty code and the
 description `"Unrecognised reason"`.
 
 ## Account (JWT)
