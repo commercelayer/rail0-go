@@ -123,7 +123,10 @@ type UpdateWalletRequest struct {
 }
 
 // Update patches label or active on a wallet (requires JWT). `id` may be the
-// wallet UUID or its 0x address (unique per account).
+// wallet UUID or its 0x address (unique per account). Active=false on the
+// account's only active wallet is refused with 422 last_active_wallet: login
+// resolves the account from a wallet, so an account with none could neither act
+// nor add one back.
 func (s *WalletsService) Update(ctx context.Context, accountID, id string, req UpdateWalletRequest) (*Wallet, error) {
 	var out Wallet
 	if err := s.http.patch(ctx, pathf("/accounts/%s/wallets/%s", accountID, id), req, &out); err != nil {
@@ -132,8 +135,10 @@ func (s *WalletsService) Update(ctx context.Context, accountID, id string, req U
 	return &out, nil
 }
 
-// Delete removes a wallet (requires JWT). `id` may be the wallet UUID or its 0x
-// address (unique per account). Returns 204 No Content.
+// Delete deactivates a wallet (requires JWT) — a soft delete, the same as Update
+// with Active=false; the row is kept because payments name the address. `id` may
+// be the wallet UUID or its 0x address (unique per account). Returns 204 No
+// Content, or 422 last_active_wallet for the account's only active wallet.
 func (s *WalletsService) Delete(ctx context.Context, accountID, id string) error {
 	return s.http.delete(ctx, pathf("/accounts/%s/wallets/%s", accountID, id), nil)
 }
