@@ -2,7 +2,6 @@ package rail0
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -483,33 +482,42 @@ func (s *PaymentsService) Refund(ctx context.Context, paymentID Bytes32, params 
 
 // DisputePrepare builds the unsigned dispute() transaction (payer only).
 //
-// reason is required: a DisputeOpenReason code (DisputeOpenReasonNotReceived, …)
-// or exactly that code's bytes32. An empty reason fails locally without a request;
-// anything else outside the dictionary is refused by the gateway with HTTP 422
+// reason is optional. Omit it (or pass "") to open the dispute with no reason —
+// the field is left out of the request and the calldata carries the zero bytes32,
+// which the Dispute entity reads back as "No reason given". When given it must be
+// a DisputeOpenReason code (DisputeOpenReasonNotReceived, …) or exactly that code's
+// bytes32; anything else is refused by the gateway with HTTP 422
 // unknown_dispute_reason. LookupDisputeOpenReason applies the same rule client-side.
-func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason DisputeReason) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/prepare", paymentID), "", reason)
+// Only the first reason is used.
+func (s *PaymentsService) DisputePrepare(ctx context.Context, paymentID Bytes32, reason ...DisputeReason) (*Transaction, error) {
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/prepare", paymentID), "", reason...)
 }
 
 // DisputePrepareWithKey is DisputePrepare with an Idempotency-Key. Pass "" to omit
 // the header. See PrepareWithKey for what the key buys; the reason is part of the
 // terms, so reusing a key with another reason is refused 422 idempotency_key_reused.
-func (s *PaymentsService) DisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason DisputeReason) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/prepare", paymentID), idempotencyKey, reason)
+func (s *PaymentsService) DisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason ...DisputeReason) (*Transaction, error) {
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/prepare", paymentID), idempotencyKey, reason...)
 }
 
-// ErrDisputeReasonRequired is returned by the dispute prepares when reason is
-// empty: the gateway requires one (400 otherwise), so no request is sent.
-var ErrDisputeReasonRequired = errors.New("rail0: a dispute reason is required")
+// disputeBody builds the optional {reason} payload for the dispute prepares. A
+// missing or blank reason leaves the field out, so the gateway records no reason
+// (the zero bytes32) instead of being asked to resolve an empty string.
+func disputeBody(reason ...DisputeReason) map[string]any {
+	body := map[string]any{}
+	if len(reason) > 0 {
+		if v := strings.TrimSpace(string(reason[0])); v != "" {
+			body["reason"] = v
+		}
+	}
+	return body
+}
 
 // disputePrepareWithKey is the one body both dispute prepares share, so the pair
 // cannot drift into answering the same header differently.
-func (s *PaymentsService) disputePrepareWithKey(ctx context.Context, path, idempotencyKey string, reason DisputeReason) (*Transaction, error) {
-	if strings.TrimSpace(string(reason)) == "" {
-		return nil, ErrDisputeReasonRequired
-	}
+func (s *PaymentsService) disputePrepareWithKey(ctx context.Context, path, idempotencyKey string, reason ...DisputeReason) (*Transaction, error) {
 	var out Transaction
-	body := map[string]any{"reason": string(reason)}
+	body := disputeBody(reason...)
 	if idempotencyKey != "" {
 		headers := map[string]string{"Idempotency-Key": idempotencyKey}
 		if err := s.http.postWithHeaders(ctx, path, body, &out, headers); err != nil {
@@ -534,17 +542,18 @@ func (s *PaymentsService) Dispute(ctx context.Context, paymentID Bytes32, params
 
 // CloseDisputePrepare builds the unsigned closeDispute() transaction (payer only).
 //
-// reason is required, as for DisputePrepare, but from the close list: a
-// DisputeCloseReason code (DisputeCloseReasonWithdrawn, …) or its exact bytes32.
-// The system reason full_refund is not accepted (the protocol records it itself);
-// it and any other value outside the list are refused 422 unknown_dispute_reason.
-func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason DisputeReason) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/close/prepare", paymentID), "", reason)
+// reason is optional, as for DisputePrepare (omitted = no reason, the zero
+// bytes32), but when given it comes from the close list: a DisputeCloseReason code
+// (DisputeCloseReasonWithdrawn, …) or its exact bytes32. The system reason
+// full_refund is not accepted (the protocol records it itself); it and any other
+// value outside the list are refused 422 unknown_dispute_reason.
+func (s *PaymentsService) CloseDisputePrepare(ctx context.Context, paymentID Bytes32, reason ...DisputeReason) (*Transaction, error) {
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/close/prepare", paymentID), "", reason...)
 }
 
 // CloseDisputePrepareWithKey is CloseDisputePrepare with an Idempotency-Key.
-func (s *PaymentsService) CloseDisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason DisputeReason) (*Transaction, error) {
-	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/close/prepare", paymentID), idempotencyKey, reason)
+func (s *PaymentsService) CloseDisputePrepareWithKey(ctx context.Context, paymentID Bytes32, idempotencyKey string, reason ...DisputeReason) (*Transaction, error) {
+	return s.disputePrepareWithKey(ctx, pathf("/payments/%s/dispute/close/prepare", paymentID), idempotencyKey, reason...)
 }
 
 // CloseDispute submits the signed close-dispute transaction (payer only).
