@@ -4,7 +4,54 @@ import (
 	"context"
 	"net/url"
 	"strconv"
+	"strings"
 )
+
+// DisputeReason is a code from the gateway's dispute-reason dictionary, e.g.
+// DisputeOpenReasonNotReceived ("not_received"). The prepare calls also accept a
+// code's exact bytes32 as a DisputeReason("0x…"). The codes, their descriptions and
+// bytes32 are generated into types_gen.go from the gateway's DisputeOpenReason,
+// DisputeCloseReason and DisputeSystemCloseReason schemas.
+type DisputeReason string
+
+// DisputeReasonInfo is one dictionary entry. Bytes32 is what goes on-chain:
+// keccak256("rail0.dispute.<code>") as lowercase 0x-hex.
+type DisputeReasonInfo struct {
+	Code        DisputeReason
+	Description string
+	Bytes32     Bytes32
+}
+
+// LookupDisputeOpenReason resolves a code name or its exact bytes32 (any hex case)
+// against the reasons a dispute can be OPENED with — the same rule the gateway
+// applies before answering 422 unknown_dispute_reason. Surrounding whitespace is
+// ignored, as the gateway does.
+func LookupDisputeOpenReason(reason string) (DisputeReasonInfo, bool) {
+	return lookupDisputeReason(DisputeOpenReasons, reason)
+}
+
+// LookupDisputeCloseReason is LookupDisputeOpenReason for CLOSING a dispute. Only
+// the caller-selectable reasons match: the system reason full_refund is recorded
+// by the protocol itself and the gateway refuses it on the close prepare.
+func LookupDisputeCloseReason(reason string) (DisputeReasonInfo, bool) {
+	return lookupDisputeReason(DisputeCloseReasons, reason)
+}
+
+// lookupDisputeReason matches the code exactly, or the bytes32 case-insensitively.
+// The list must be passed because a code (`other`) can sit in both the open and the
+// close list with different descriptions — the kind decides which one applies.
+func lookupDisputeReason(list []DisputeReasonInfo, reason string) (DisputeReasonInfo, bool) {
+	v := strings.TrimSpace(reason)
+	if v == "" {
+		return DisputeReasonInfo{}, false
+	}
+	for _, e := range list {
+		if string(e.Code) == v || strings.EqualFold(e.Bytes32, v) {
+			return e, true
+		}
+	}
+	return DisputeReasonInfo{}, false
+}
 
 // DisputesService lists disputes across the authenticated account's payments
 // (requires JWT). Unlike PaymentsService.Disputes — which returns one payment's

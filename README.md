@@ -434,16 +434,14 @@ broadcasts the signed raw tx. The on-chain event then flips the payment's
 `Disputed` flag.
 
 ```go
-// Open a dispute (payer only). reason is optional but must be a FULL bytes32
-// when given — "0x" + exactly 64 hex digits (right-pad a short code); omit it
-// and the gateway defaults to the zero bytes32.
-tx, _ := client.Payments.DisputePrepare(ctx, rail0ID,
-    "0x0100000000000000000000000000000000000000000000000000000000000000")
+// Open a dispute (payer only). reason is REQUIRED: a DisputeOpenReason code, or
+// exactly that code's bytes32 as rail0.DisputeReason("0x…").
+tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, rail0.DisputeOpenReasonNotReceived)
 // sign tx.UnsignedTransaction → signedBytes
 client.Payments.Dispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
-// Close a dispute (payer only)
-tx, _ = client.Payments.CloseDisputePrepare(ctx, rail0ID)
+// Close a dispute (payer only), with a reason from the CLOSE list
+tx, _ = client.Payments.CloseDisputePrepare(ctx, rail0ID, rail0.DisputeCloseReasonWithdrawn)
 client.Payments.CloseDispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
 // MetaMask buyer: report the broadcast dispute / close-dispute tx by hash instead
@@ -462,6 +460,39 @@ for _, d := range all.Data {
     _ = d.Payment.Rail0Id // embedded payment
 }
 ```
+
+#### Dispute reasons
+
+The reason is a code from the gateway's dispute-reason dictionary; on-chain it is
+the bytes32 `keccak256("rail0.dispute.<code>")`. There are two lists — a dispute is
+opened with one and closed with the other — plus a system close reason the protocol
+records on its own:
+
+| List | Codes |
+| --- | --- |
+| `rail0.DisputeOpenReasons` | `not_received`, `not_as_described`, `damaged_or_defective`, `duplicate`, `incorrect_amount`, `cancelled`, `refund_not_received`, `unauthorized`, `other` |
+| `rail0.DisputeCloseReasons` | `resolved_with_merchant`, `withdrawn`, `item_received`, `other` |
+| `rail0.DisputeSystemCloseReasons` | `full_refund` (a full refund auto-closed the dispute — never sent by a caller) |
+
+Each entry is a `DisputeReasonInfo{Code, Description, Bytes32}`, and every code has a
+typed constant (`rail0.DisputeOpenReasonNotReceived`, `rail0.DisputeCloseReasonOther`,
+…). An empty reason fails locally with `rail0.ErrDisputeReasonRequired`; anything
+outside the list is refused by the gateway with HTTP 422 `unknown_dispute_reason`.
+Validate user input before the call with the same rule the gateway applies:
+
+```go
+info, ok := rail0.LookupDisputeOpenReason(input) // code or bytes32 (any hex case)
+if !ok {
+    // not a code you can open a dispute with — offer rail0.DisputeOpenReasons
+}
+tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, info.Code)
+```
+
+A `Dispute` reads its reasons back as `ReasonCode`/`ReasonDescription` and
+`CloseReasonCode`/`CloseReasonDescription` next to the raw bytes32 `Reason` and
+`CloseReason`. A bytes32 outside the dictionary (a direct contract call, or a dispute
+opened before the dictionary existed) keeps its raw value with an empty code and the
+description `"Unrecognised reason"`.
 
 ## Account (JWT)
 
@@ -855,8 +886,11 @@ go build ./...
 ```
 
 > Note: `types_gen.go` is generated from the gateway's OpenAPI document
-> (`rail0-gateway/docs/openapi.json`) by `gen/generate.go`. Do not hand-edit it —
-> after a gateway API change, regenerate it:
+> (`rail0-gateway/docs/openapi.json`) by `gen/generate.go` — the domain types and the
+> dispute-reason dictionaries (read from the `DisputeOpenReason`,
+> `DisputeCloseReason` and `DisputeSystemCloseReason` schemas' `x-enum-descriptions`
+> / `x-enum-bytes32`). Do not hand-edit it — after a gateway API change, regenerate it
+> (`RAIL0_SCHEMA_PATH` points it at another `openapi.json`):
 >
 > ```bash
 > go run gen/generate.go

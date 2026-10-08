@@ -133,7 +133,7 @@ func TestDisputePrepareWithKeySendsTheHeader(t *testing.T) {
 	mt.push(jsonResp(201, map[string]any{"id": "tx-3"}))
 	client := newMockClient(t, mt)
 
-	if _, err := client.Payments.DisputePrepareWithKey(context.Background(), testPaymentID, "k-3"); err != nil {
+	if _, err := client.Payments.DisputePrepareWithKey(context.Background(), testPaymentID, "k-3", rail0.DisputeOpenReasonOther); err != nil {
 		t.Fatalf("DisputePrepareWithKey: %v", err)
 	}
 	if got := mt.recorded[0].Header.Get("Idempotency-Key"); got != "k-3" {
