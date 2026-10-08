@@ -79,15 +79,18 @@ var errorHints = map[string]string{
 	"not_capturable":            "the payment must be 'authorized' or 'partially_captured' to capture",
 	"not_voidable":              "void is only allowed while 'authorized' with nothing captured — use release for the remainder after a capture",
 	// Not the expiry window (that is authorization_not_expired): nothing uncaptured is left.
-	"not_releasable":               "there is no uncaptured (capturable) balance left to return to the buyer — check capturableAmount on the payment",
-	"not_refundable":               "nothing is refundable — the payment must be charged/captured and within the refund window",
-	"not_signable":                 "the payment must be 'unsigned' to sign",
-	"already_signed":               "the payer signature is already stored — the payee can act now",
-	"no_signature":                 "the payer has not signed yet",
-	"wrong_mode":                   "this operation doesn't match the payment's mode (authorize vs charge)",
-	"already_disputed":             "a dispute is already open — close it first",
-	"not_disputed":                 "there is no open dispute to close",
-	"nothing_to_dispute":           "a dispute needs a merchant-held (refundable) balance",
+	"not_releasable":     "there is no uncaptured (capturable) balance left to return to the buyer — check capturableAmount on the payment",
+	"not_refundable":     "nothing is refundable — the payment must be charged/captured and within the refund window",
+	"not_signable":       "the payment must be 'unsigned' to sign",
+	"already_signed":     "the payer signature is already stored — the payee can act now",
+	"no_signature":       "the payer has not signed yet",
+	"wrong_mode":         "this operation doesn't match the payment's mode (authorize vs charge)",
+	"already_disputed":   "a dispute is already open — close it first",
+	"not_disputed":       "there is no open dispute to close",
+	"nothing_to_dispute": "a dispute needs a merchant-held (refundable) balance",
+	// The open and close lists differ (and full_refund is system-only), so the hint
+	// points at both rather than guessing which one the caller meant.
+	"unknown_dispute_reason":       "the reason must be a dispute-reason code (or its exact bytes32) from the right list — DisputeOpenReasons to open, DisputeCloseReasons to close",
 	"transaction_not_overwritable": "a transaction for this operation is already in flight — wait for it to settle",
 	"signer_mismatch":              "the signing key doesn't match the payment's payer/payee",
 	// The SIWE BINDING failures, split out of signer_mismatch so a failed login says

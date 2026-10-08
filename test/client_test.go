@@ -822,11 +822,16 @@ func TestTransactions_SendsQueryParamsAndDecodes(t *testing.T) {
 // ================================================================
 
 var mockDisputeResp = map[string]any{
-	"id":         "dsp_1",
-	"payment_id": "pay_123",
-	"status":     "open",
-	"reason":     "0x0000000000000000000000000000000000000000000000000000000000000001",
-	"opened_at":  "2026-06-30T12:10:00Z",
+	"id":                       "dsp_1",
+	"payment_id":               "pay_123",
+	"status":                   "closed",
+	"reason":                   "0x8b8e446d6f906b670526e73bf5502f1db64b2150c42360febf9dec0d075a28f9",
+	"reason_code":              "not_received",
+	"reason_description":       "Goods or service not received",
+	"close_reason":             "0x8d72b2d99f736f70b77d5c4eb77867aa31f7d7be526741b1ba241c1c663b0f6c",
+	"close_reason_code":        "full_refund",
+	"close_reason_description": "Closed automatically by a full refund",
+	"opened_at":                "2026-06-30T12:10:00Z",
 }
 
 func TestDisputePrepare_PostsToCorrectURLWithReason(t *testing.T) {
@@ -834,7 +839,7 @@ func TestDisputePrepare_PostsToCorrectURLWithReason(t *testing.T) {
 	mt.push(jsonResp(200, mockPrepareResp))
 	client := newMockClient(t, mt)
 
-	res, err := client.Payments.DisputePrepare(context.Background(), mockPaymentID, "0x01")
+	res, err := client.Payments.DisputePrepare(context.Background(), mockPaymentID, rail0.DisputeOpenReasonNotReceived)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -853,8 +858,8 @@ func TestDisputePrepare_PostsToCorrectURLWithReason(t *testing.T) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatalf("body is not valid JSON: %v", err)
 	}
-	if decoded["reason"] != "0x01" {
-		t.Errorf("reason body: got %v, want 0x01", decoded["reason"])
+	if decoded["reason"] != "not_received" {
+		t.Errorf("reason body: got %v, want not_received", decoded["reason"])
 	}
 	if res.UnsignedTransaction == "" {
 		t.Error("UnsignedTransaction should decode from the prepare fixture")
@@ -887,7 +892,7 @@ func TestCloseDisputePrepare_PostsToCorrectURL(t *testing.T) {
 	mt.push(jsonResp(200, mockPrepareResp))
 	client := newMockClient(t, mt)
 
-	if _, err := client.Payments.CloseDisputePrepare(context.Background(), mockPaymentID); err != nil {
+	if _, err := client.Payments.CloseDisputePrepare(context.Background(), mockPaymentID, rail0.DisputeCloseReasonWithdrawn); err != nil {
 		t.Fatal(err)
 	}
 
@@ -895,6 +900,46 @@ func TestCloseDisputePrepare_PostsToCorrectURL(t *testing.T) {
 	wantPath := "/payments/" + mockPaymentID + "/dispute/close/prepare"
 	if req.URL.Path != wantPath {
 		t.Errorf("path: got %s, want %s", req.URL.Path, wantPath)
+	}
+	body, _ := io.ReadAll(req.Body)
+	if !strings.Contains(string(body), `"reason":"withdrawn"`) {
+		t.Errorf("body: got %s, want reason withdrawn", body)
+	}
+}
+
+// The gateway answers a missing reason with a 400; the SDK refuses it before the
+// request so the caller gets one typed error for both prepares.
+func TestDisputePrepares_RequireAReason(t *testing.T) {
+	mt := &mockTransport{t: t}
+	client := newMockClient(t, mt)
+
+	if _, err := client.Payments.DisputePrepare(context.Background(), mockPaymentID, ""); !errors.Is(err, rail0.ErrDisputeReasonRequired) {
+		t.Errorf("DisputePrepare: got %v, want ErrDisputeReasonRequired", err)
+	}
+	if _, err := client.Payments.CloseDisputePrepareWithKey(context.Background(), mockPaymentID, "k", "  "); !errors.Is(err, rail0.ErrDisputeReasonRequired) {
+		t.Errorf("CloseDisputePrepareWithKey: got %v, want ErrDisputeReasonRequired", err)
+	}
+	if len(mt.recorded) != 0 {
+		t.Errorf("no request should be sent, got %d", len(mt.recorded))
+	}
+}
+
+func TestDisputePrepare_UnknownReasonSurfacesTheGatewayCodeAndHint(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(jsonResp(422, map[string]any{
+		"code":   "unknown_dispute_reason",
+		"title":  "Unknown dispute reason",
+		"detail": "The reason is not one of the dispute reasons this operation accepts.",
+	}))
+	client := newMockClient(t, mt)
+
+	_, err := client.Payments.DisputePrepare(context.Background(), mockPaymentID, "nope")
+	var apiErr *rail0.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 422 || apiErr.Code != "unknown_dispute_reason" {
+		t.Fatalf("got %v, want a 422 unknown_dispute_reason APIError", err)
+	}
+	if apiErr.Hint() == "" {
+		t.Error("unknown_dispute_reason should carry a hint")
 	}
 }
 
@@ -937,11 +982,43 @@ func TestDisputes_ListsHistory(t *testing.T) {
 	if len(disputes.Data) != 1 {
 		t.Fatalf("expected 1 dispute, got %d", len(disputes.Data))
 	}
-	if disputes.Data[0].Status != "open" {
-		t.Errorf("Status: got %q, want open", disputes.Data[0].Status)
+	if disputes.Data[0].Status != "closed" {
+		t.Errorf("Status: got %q, want closed", disputes.Data[0].Status)
 	}
-	if disputes.Data[0].ID != "dsp_1" {
-		t.Errorf("ID: got %q, want dsp_1", disputes.Data[0].ID)
+	d := disputes.Data[0]
+	if d.ID != "dsp_1" {
+		t.Errorf("ID: got %q, want dsp_1", d.ID)
+	}
+	if d.ReasonCode != rail0.DisputeOpenReasonNotReceived || d.ReasonDescription != "Goods or service not received" {
+		t.Errorf("reason: got %q / %q", d.ReasonCode, d.ReasonDescription)
+	}
+	if d.CloseReasonCode != rail0.DisputeSystemCloseReasonFullRefund || d.CloseReasonDescription != "Closed automatically by a full refund" {
+		t.Errorf("close reason: got %q / %q", d.CloseReasonCode, d.CloseReasonDescription)
+	}
+}
+
+// A bytes32 outside the dictionary reads back with a null code: it must decode to
+// the empty DisputeReason, with the gateway's "Unrecognised reason" description.
+func TestDisputes_UnrecognisedReasonDecodesToEmptyCode(t *testing.T) {
+	mt := &mockTransport{t: t}
+	mt.push(listResp(200, []map[string]any{{
+		"id":                 "dsp_2",
+		"status":             "open",
+		"reason":             "0x0000000000000000000000000000000000000000000000000000000000000000",
+		"reason_code":        nil,
+		"reason_description": "Unrecognised reason",
+		"close_reason":       nil,
+		"close_reason_code":  nil,
+	}}, "1"))
+	client := newMockClient(t, mt)
+
+	disputes, err := client.Payments.Disputes(context.Background(), mockPaymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := disputes.Data[0]
+	if d.ReasonCode != "" || d.CloseReasonCode != "" || d.ReasonDescription != "Unrecognised reason" {
+		t.Errorf("got code %q / close code %q / description %q", d.ReasonCode, d.CloseReasonCode, d.ReasonDescription)
 	}
 }
 
