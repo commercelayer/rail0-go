@@ -128,6 +128,10 @@ var errorHints = map[string]string{
 	"wallet_deactivated":            "this wallet is deactivated — it can still read, but cannot act on payments or change the account; reactivate it or sign in with another of the account's wallets",
 	"release_submitter_not_a_party": "from must be the payment's payer or payee — omit it to build the release for the signed-in caller",
 	"payer_must_be_caller":          "the payer must be the signed-in wallet — the buyer creates and authorizes its own payment",
+	// Login resolves the account FROM a wallet, so an account left with no active one
+	// could neither act nor add a wallet back.
+	"last_active_wallet": "this is the account's only active wallet — add or reactivate another wallet first, then switch this one off",
+	"last_admin":         "the change would leave no active operator — grant the operator role to another active account first",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
 	"not_payee":                  "only the merchant (payee) may do this",
 	"not_payer":                  "only the buyer (payer) may do this",

@@ -239,7 +239,9 @@ captured login proof bind that address to their **own** account. `Login` and
 // Update a wallet (label / active)
 client.Wallets.Update(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Main"})
 
-// Delete a wallet
+// Delete a wallet — a soft delete: it deactivates (same as Active=false), the row stays.
+// The account's only active wallet is refused with 422 last_active_wallet (login
+// resolves the account from a wallet): add or reactivate another one first.
 client.Wallets.Delete(ctx, accountID, w.ID)
 
 // What the wallet ACCEPTS — this is what drives the public /payment_methods and

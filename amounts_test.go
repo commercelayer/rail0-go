@@ -107,7 +107,7 @@ func TestDescribeErrorCoversTheGatewayCodes(t *testing.T) {
 		"account_deactivated", "wallet_deactivated", "not_your_account",
 		"release_submitter_not_a_party", "validation_failed", "rate_limited",
 		"event_not_found", "submission_timeout", "token_not_accepted",
-		"payer_must_be_caller", "not_redrivable",
+		"payer_must_be_caller", "not_redrivable", "last_active_wallet", "last_admin",
 	} {
 		if DescribeError(code) == "" {
 			t.Errorf("expected a hint for %s", code)
