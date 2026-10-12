@@ -88,6 +88,36 @@ func TestAccountsUpdatePatchesOnlyTheGivenFields(t *testing.T) {
 	}
 }
 
+// priority_tip is a pointer precisely so that false is sendable: `omitempty` on a plain
+// bool would drop the one value that switches the fee setting off, and the PATCH would
+// read as "nothing to change".
+func TestAccountsUpdateSendsPriorityTipFalse(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"acc","name":"Merchant","email":"merchant@rail0.test","priority_tip":false}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt"})
+	off := false
+	account, err := c.Accounts.Update(context.Background(), "acc", UpdateAccountRequest{PriorityTip: &off})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if v, ok := gotBody["priority_tip"]; !ok || v != false {
+		t.Errorf("body priority_tip = %v (present %v), want false", v, ok)
+	}
+	if len(gotBody) != 1 {
+		t.Errorf("body = %v, want priority_tip alone", gotBody)
+	}
+	if account.PriorityTip {
+		t.Errorf("response priority_tip not decoded: %+v", account)
+	}
+}
+
 // A taken name or email is the gateway's 409 conflict, and it must reach the caller as a
 // typed APIError it can branch on rather than a decoded-but-empty account.
 func TestAccountsUpdateSurfacesAConflict(t *testing.T) {

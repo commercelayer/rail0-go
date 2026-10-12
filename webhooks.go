@@ -50,11 +50,15 @@ const (
 // only on create and rotate_secret) and EventCallback (a single delivery
 // attempt) are generated from the gateway OpenAPI schema in types_gen.go.
 
-// Headers carried by every webhook delivery.
+// Headers carried by every webhook delivery. HeaderWebhookSignaturePrevious is
+// present only inside the grace window after RotateSecret: the same digest under
+// the REPLACED secret, so an endpoint still holding the old key verifies that one
+// instead (see RotateSecret).
 const (
-	HeaderWebhookTopic     = "X-Rail0-Topic"
-	HeaderWebhookTimestamp = "X-Rail0-Timestamp"
-	HeaderWebhookSignature = "X-Rail0-Signature"
+	HeaderWebhookTopic             = "X-Rail0-Topic"
+	HeaderWebhookTimestamp         = "X-Rail0-Timestamp"
+	HeaderWebhookSignature         = "X-Rail0-Signature"
+	HeaderWebhookSignaturePrevious = "X-Rail0-Signature-Previous"
 )
 
 // WebhookToleranceSecs is the accepted clock skew, in seconds, between the
@@ -224,6 +228,16 @@ func (s *WebhooksService) Disable(ctx context.Context, id string) (*Webhook, err
 
 // RotateSecret generates a new shared secret and returns it once on the response
 // (requires JWT).
+//
+// The replaced secret is kept for a grace window (the gateway's
+// WEBHOOK_SECRET_GRACE, one hour by default): inside it every delivery carries
+// X-Rail0-Signature under the new key AND X-Rail0-Signature-Previous under the
+// old one, so an endpoint verifies with whichever key it has deployed and no
+// delivery in flight at rotation becomes unverifiable — run
+// VerifyWebhookSignature against HeaderWebhookSignature first and, while the old
+// secret is still the one deployed, against HeaderWebhookSignaturePrevious. The
+// old key signs only, is never honoured past the window, and a second rotation
+// inside it drops the oldest key.
 func (s *WebhooksService) RotateSecret(ctx context.Context, id string) (*Webhook, error) {
 	return s.putAction(ctx, id, "rotate_secret")
 }

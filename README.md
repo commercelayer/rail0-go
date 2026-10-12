@@ -343,6 +343,18 @@ open, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{
     Statuses: []string{"authorized", "expired"},
 })
 
+// The operator's cross-account list, on the same call: Scope "all" needs an admin
+// session (403 otherwise) and unlocks three filters that mean nothing under the
+// default "mine" — the payee account, whether a last_error_code is set, and
+// authorizations expiring within N seconds (1..90 days).
+failing := true
+stuck, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{
+    Scope:          "all",
+    AccountID:      merchantAccountID, // payments whose payee is one of this account's wallets
+    HasError:       &failing,
+    ExpiringWithin: 24 * 3600,
+})
+
 // Every row (list, detail, and the payment embedded in Disputes.List) carries
 // InFlight: true while one of its transactions is submitting, submitted, or
 // pending with its signed transaction — the balances are about to move, so
@@ -421,7 +433,8 @@ moving, _ := client.Payments.Transactions(ctx, rail0ID, rail0.ListTransactionsPa
 // Redrive a broadcast that was prepared and signed but never landed. Offer this on
 // Transaction.Redrivable — the same predicate the gateway guards the route with — and
 // not on `status == "pending"`: a pending row holding no signed transaction is not
-// redrivable, and there the next step is submitting the signature.
+// redrivable, and there the next step is submitting the signature. Payee-gated, or
+// an operator session on any payment (audited as transaction.redrive).
 tx, _ := client.Payments.Redrive(ctx, rail0ID, "019f8a3d-…")
 ```
 
@@ -513,19 +526,27 @@ description `"Unrecognised reason"`.
 // another merchant's account here — and an id that is not an account answers 404
 // exactly as another account's id does, so the pair says nothing about existence.
 me, _ := client.Accounts.Get(ctx, accountID)
-fmt.Println(me.Name, me.Email)
+fmt.Println(me.Name, me.Email, me.PriorityTip)
 
-// Change the display name and/or contact email. Both optional, at least one required
-// (an empty request is a 400 validation_failed); unset fields stay off the wire.
+// Change the display name and/or contact email. Every field optional, at least one
+// required (an empty request is a 400 validation_failed); unset fields stay off the wire.
 me, err := client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
     Email: "ops@example.com",
 })
+
+// PriorityTip is the fee setting of the account's OWN transactions (authorize, capture,
+// void, release, refund): true, the default, tips the network's suggested priority fee;
+// false uses the chain's minimum tip (0 on most chains, 25 gwei on Polygon PoS/Amoy).
+// A pointer, so that false is a value and nil leaves it alone.
+off := false
+me, err = client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{PriorityTip: &off})
 ```
 
 `Update` edits only the holder's own profile. Name and email are each unique across
 accounts, so one already taken answers `409` (`conflict`). A deactivated account or
 signed-in wallet answers `403` `account_deactivated` / `wallet_deactivated`. The
-account's `active` flag is an operator action and is not exposed by the SDK.
+account's `active` flag is an operator action and is not exposed by the SDK; `priority_tip`
+is the owner's (or an admin's) and never touches the buyer's dispute/close_dispute gas.
 
 ## Analytics (JWT + account)
 
@@ -790,6 +811,29 @@ cannot be moved forward to refresh a captured delivery. This requires a gateway
 sending the timestamped signature (rail0-gateway#176, from 2026-07-31) — against
 an older gateway, which signed the body alone and sent no `X-Rail0-Timestamp`,
 every delivery fails verification.
+
+**Rotating the secret without a gap.** After `RotateSecret` the gateway keeps the
+replaced key for a grace window (`WEBHOOK_SECRET_GRACE`, one hour by default): inside
+it every delivery carries `X-Rail0-Signature` under the new key **and**
+`X-Rail0-Signature-Previous` (`rail0.HeaderWebhookSignaturePrevious`) under the old
+one, so an endpoint verifies with whichever key it has deployed and nothing in flight at
+rotation becomes unverifiable. Deploy the new secret at your pace within the window; an
+endpoint that still holds the old one verifies the previous header instead:
+
+```go
+sig := r.Header.Get(rail0.HeaderWebhookSignature)
+if !rail0.VerifyWebhookSignature(secret, string(body), ts, sig) {
+    // Still on the pre-rotation secret? The old key signs the previous header
+    // for the grace window only — it is never honoured past it.
+    sig = r.Header.Get(rail0.HeaderWebhookSignaturePrevious)
+    if sig == "" || !rail0.VerifyWebhookSignature(secret, string(body), ts, sig) {
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        return
+    }
+}
+```
+
+A second rotation inside the window drops the oldest key.
 
 ## Sorting
 
