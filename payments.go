@@ -30,24 +30,35 @@ const (
 // gateway matches ANY of the listed states (gateway #367), so the SDK sends the
 // union — Status first, then Statuses, blanks and duplicates dropped — as one
 // comma-separated `status=` value. Status alone behaves exactly as before.
+//
+// Scope is the operator's lever: "mine" (the default, and what an empty Scope
+// means) lists the authenticated wallet's own payments, "all" lists every payment
+// on the gateway and needs an admin session (403 otherwise). AccountID, HasError
+// and ExpiringWithin only mean something under Scope "all" — they narrow the
+// cross-account list by payee account, by the presence of a last_error_code, and
+// to authorizations whose expiry falls within that many seconds from now.
 type ListPaymentsParams struct {
-	Status      string   // filter by one payment status
-	Statuses    []string // filter by several payment statuses (e.g. {"authorized", "expired"}); unioned with Status
-	Mode        string   // filter by mode ("authorize" or "charge")
-	Payer       string   // filter by payer address
-	Payee       string   // filter by payee address
-	Token       string   // filter by token address
-	Rail0ID     string   // filter by the logical on-chain payment id (0x…)
-	ChainID     int      // filter by the payment's chain (resolved via its contract); 0 = no filter
-	Disputed    *bool    // filter by whether an open dispute exists; nil = no filter
-	MinAmount   string   // minimum amount in token base units (inclusive)
-	MaxAmount   string   // maximum amount in token base units (inclusive)
-	CreatedFrom string   // only payments created at/after this ISO-8601 time
-	CreatedTo   string   // only payments created at/before this ISO-8601 time
-	Operation   string   // only payments carrying at least one transaction with this operation (e.g. "dispute")
-	Sort        string   // sort fields: comma-separated, prefix with - for desc
-	Page        int      // page number (1-based); 0 = use server default
-	PerPage     int      // items per page; 0 = use server default
+	Status         string   // filter by one payment status
+	Statuses       []string // filter by several payment statuses (e.g. {"authorized", "expired"}); unioned with Status
+	Mode           string   // filter by mode ("authorize" or "charge")
+	Payer          string   // filter by payer address
+	Payee          string   // filter by payee address
+	Token          string   // filter by token address
+	Rail0ID        string   // filter by the logical on-chain payment id (0x…)
+	ChainID        int      // filter by the payment's chain (resolved via its contract); 0 = no filter
+	Disputed       *bool    // filter by whether an open dispute exists; nil = no filter
+	MinAmount      string   // minimum amount in token base units (inclusive)
+	MaxAmount      string   // maximum amount in token base units (inclusive)
+	CreatedFrom    string   // only payments created at/after this ISO-8601 time
+	CreatedTo      string   // only payments created at/before this ISO-8601 time
+	Operation      string   // only payments carrying at least one transaction with this operation (e.g. "dispute")
+	Scope          string   // "mine" (default) or "all" (admin only: every payment on the gateway)
+	AccountID      string   // Scope "all" only: payments whose payee is one of this account's wallets
+	HasError       *bool    // Scope "all" only: true = payments carrying a last_error_code, false = none; nil = no filter
+	ExpiringWithin int      // Scope "all" only: authorized payments expiring within this many seconds (1..90 days); 0 = no filter
+	Sort           string   // sort fields: comma-separated, prefix with - for desc
+	Page           int      // page number (1-based); 0 = use server default
+	PerPage        int      // items per page; 0 = use server default
 }
 
 // List returns payments for the authenticated account (requires JWT). The
@@ -97,6 +108,18 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 		}
 		if p.Operation != "" {
 			q.Set("operation", p.Operation)
+		}
+		if p.Scope != "" {
+			q.Set("scope", p.Scope)
+		}
+		if p.AccountID != "" {
+			q.Set("account_id", p.AccountID)
+		}
+		if p.HasError != nil {
+			q.Set("has_error", strconv.FormatBool(*p.HasError))
+		}
+		if p.ExpiringWithin > 0 {
+			q.Set("expiring_within", strconv.Itoa(p.ExpiringWithin))
 		}
 		if p.Sort != "" {
 			q.Set("sort", p.Sort)
@@ -292,7 +315,9 @@ func (s *PaymentsService) Transactions(ctx context.Context, paymentID Bytes32, p
 // not retrying a send that never happened.
 //
 // The transaction id is resolved THROUGH the payment, so one belonging to another payment
-// answers 404 rather than redriving someone else's row.
+// answers 404 rather than redriving someone else's row. Payee-gated, like the other
+// operation writes — or an operator session on any payment, which the gateway records
+// in its audit log as transaction.redrive.
 func (s *PaymentsService) Redrive(ctx context.Context, paymentID Bytes32, transactionID string) (*Transaction, error) {
 	var out Transaction
 	path := pathf("/payments/%s/transactions/%s/redrive", paymentID, transactionID)
