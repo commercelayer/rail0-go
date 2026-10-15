@@ -125,6 +125,13 @@ var errorHints = map[string]string{
 	"not_the_payer":     "only the payment's payer can do this — sign in with the buyer's wallet",
 	"not_a_participant": "only the payer and the payee can see or act on a payment",
 	"not_your_account":  "the session belongs to a different account than the one in the path — use your own account id",
+	// A session is bound to the one wallet it signed in with: the account's other wallets
+	// are readable, but their label/active flag and accepted tokens are not this session's
+	// to change (operators are exempt).
+	"not_your_wallet": "a session can change only the wallet it signed in with — sign in with that wallet to update it, deactivate it or manage its tokens",
+	// POST /accounts/:id/wallets is suspended for every session until the merchant
+	// wallet-management section lands; the request shape and its proof stay as they are.
+	"wallet_add_unavailable": "adding a wallet to an account is not available yet — it returns with the merchant wallet-management section",
 	// Deactivation blocks money-in and account writes only; reads and the operations that
 	// return funds keep working, so a wind-down is never trapped.
 	"account_deactivated":           "the merchant account is deactivated — void, release and refund still work, but new payments, authorize, charge, capture and account changes are blocked until an operator reactivates it",
@@ -132,8 +139,9 @@ var errorHints = map[string]string{
 	"release_submitter_not_a_party": "from must be the payment's payer or payee — omit it to build the release for the signed-in caller",
 	"payer_must_be_caller":          "the payer must be the signed-in wallet — the buyer creates and authorizes its own payment",
 	// Login resolves the account FROM a wallet, so an account left with no active one
-	// could neither act nor add a wallet back.
-	"last_active_wallet": "this is the account's only active wallet — add or reactivate another wallet first, then switch this one off",
+	// could neither act nor add a wallet back. Adding a wallet is suspended and a session
+	// changes only its own wallet, so the other wallet has to be reactivated by an operator.
+	"last_active_wallet": "this is the account's only active wallet — another wallet must be active before this one can be switched off (adding a wallet is not available yet; an operator can reactivate one)",
 	"last_admin":         "the change would leave no active operator — grant the operator role to another active account first",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
 	"not_payee":                  "only the merchant (payee) may do this",
