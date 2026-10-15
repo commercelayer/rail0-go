@@ -14,6 +14,13 @@ import (
 // no tokens is still returned (Tokens is empty), never omitted. Get/Create/
 // Update return the plain Wallet record. The verb set mirrors PaymentsService
 // and WebhooksService (List/Get/Create/Update/Delete) for a consistent SDK.
+//
+// A session is bound to the wallet it signed in with. Reads (List, Get,
+// Balances) are account-wide, but every write on an existing wallet — Update,
+// Delete and the token calls — acts only on the session's own wallet: another
+// wallet of the same account is refused 403 not_your_wallet (an operator session
+// is exempt). Create is suspended on the gateway for every session (403
+// wallet_add_unavailable).
 type WalletsService struct {
 	http *httpClient
 }
@@ -108,6 +115,11 @@ type CreateWalletRequest struct {
 // Create adds a new wallet to the account (requires JWT). The request must carry
 // a SIWE proof-of-ownership of Address (see CreateWalletRequest / ProveAddress).
 // Returns the plain Wallet record (not a wallet-token row).
+//
+// CURRENTLY UNAVAILABLE: the gateway refuses every session with 403
+// wallet_add_unavailable until the merchant wallet-management section lands. The
+// method and its request shape are kept because that section reuses them (owner
+// only, with the same proof; an operator cannot add a wallet to another account).
 func (s *WalletsService) Create(ctx context.Context, accountID string, req CreateWalletRequest) (*Wallet, error) {
 	var out Wallet
 	if err := s.http.post(ctx, pathf("/accounts/%s/wallets", accountID), req, &out); err != nil {
@@ -123,10 +135,12 @@ type UpdateWalletRequest struct {
 }
 
 // Update patches label or active on a wallet (requires JWT). `id` may be the
-// wallet UUID or its 0x address (unique per account). Active=false on the
-// account's only active wallet is refused with 422 last_active_wallet: login
-// resolves the account from a wallet, so an account with none could neither act
-// nor add one back.
+// wallet UUID or its 0x address (unique per account). Only the wallet the
+// session signed in with: another wallet of the account is refused 403
+// not_your_wallet (an operator may change any). Active=false on the account's
+// only active wallet is refused with 422 last_active_wallet: login resolves the
+// account from a wallet, so an account with none could neither act nor add one
+// back.
 func (s *WalletsService) Update(ctx context.Context, accountID, id string, req UpdateWalletRequest) (*Wallet, error) {
 	var out Wallet
 	if err := s.http.patch(ctx, pathf("/accounts/%s/wallets/%s", accountID, id), req, &out); err != nil {
@@ -138,7 +152,8 @@ func (s *WalletsService) Update(ctx context.Context, accountID, id string, req U
 // Delete deactivates a wallet (requires JWT) — a soft delete, the same as Update
 // with Active=false; the row is kept because payments name the address. `id` may
 // be the wallet UUID or its 0x address (unique per account). Returns 204 No
-// Content, or 422 last_active_wallet for the account's only active wallet.
+// Content, or 422 last_active_wallet for the account's only active wallet. Like
+// Update, only the session's own wallet (403 not_your_wallet otherwise).
 func (s *WalletsService) Delete(ctx context.Context, accountID, id string) error {
 	return s.http.delete(ctx, pathf("/accounts/%s/wallets/%s", accountID, id), nil)
 }
@@ -159,6 +174,9 @@ type AddWalletTokenRequest struct {
 // invisible to buyers and unusable as a payee. rail0-ts and rail0-ruby have had them
 // since their wallet resources existed; without them a Go integration could create a
 // wallet and then had to leave the SDK to finish configuring it. (#33)
+//
+// Owner only, and only on the wallet the session signed in with: another wallet of
+// the same account is refused 403 not_your_wallet.
 //
 // `tokenID` on Remove/Enable/Disable is the TOKEN's UUID — WalletTokenHolding.TokenID,
 // not an id of the holding row: the gateway looks the holding up by (wallet, token). A

@@ -126,7 +126,8 @@ resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz", 5042002)
 
 // The same SIWE handshake, without logging in, produces a proof-of-ownership of
-// an address for Wallets.Create (see "Wallets" below). ProveAddress fetches a
+// an address for Wallets.Create (see "Wallets" below; adding a wallet is
+// currently unavailable on the gateway). ProveAddress fetches a
 // nonce and signs with the given key, but does NOT touch the client's token. The
 // message carries the WALLET-LINK statement, not the login one — see below:
 proof, _ := client.Auth.ProveAddress(ctx, walletKeyBytes, "api.rail0.xyz")
@@ -191,6 +192,15 @@ tokens is still returned (`Tokens` empty), never omitted. Single-get/create/
 update return the plain `rail0.Wallet`. (Buyer-facing discovery of a merchant's
 wallets is public and lives on `client.PaymentMethods`, below.)
 
+**A session is bound to the wallet it signed in with.** Reads (`List`, `Get`,
+`Balances`) are account-wide, but `Update`, `Delete` and the token calls act only on
+the session's own wallet: another wallet of the same account is refused 403
+`not_your_wallet`. An operator session is exempt.
+
+**Adding a wallet is currently unavailable.** The gateway answers every
+`Wallets.Create` with 403 `wallet_add_unavailable`; it returns with the merchant
+wallet-management section, which keeps the request shape and the proof below.
+
 ```go
 // List wallets, each with its tokens nested. ChainID/TokenSymbol restrict the
 // nested tokens (the wallet is still returned, possibly with no tokens); Active
@@ -207,7 +217,8 @@ wallets, _ := client.Wallets.List(ctx, accountID, rail0.ListWalletsParams{
 // Get a single wallet by id or 0x address (address is unique per account)
 w, _ := client.Wallets.Get(ctx, accountID, "0xABC…")
 
-// Create a wallet — requires a SIWE proof-of-ownership of the address being
+// Create a wallet (currently unavailable: 403 wallet_add_unavailable) — requires a
+// SIWE proof-of-ownership of the address being
 // added. Build it with Auth.ProveAddress using the KEY OF THAT ADDRESS (the same
 // handshake as login; it fetches a nonce and signs, but does NOT log the client
 // in). The added address need not equal the session address — a merchant may
@@ -236,18 +247,19 @@ captured login proof bind that address to their **own** account. `Login` and
 
 ```go
 
-// Update a wallet (label / active)
+// Update a wallet (label / active) — the session's own wallet only (403 not_your_wallet)
 client.Wallets.Update(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Main"})
 
 // Delete a wallet — a soft delete: it deactivates (same as Active=false), the row stays.
 // The account's only active wallet is refused with 422 last_active_wallet (login
-// resolves the account from a wallet): add or reactivate another one first.
+// resolves the account from a wallet): another wallet must be active first.
 client.Wallets.Delete(ctx, accountID, w.ID)
 
 // What the wallet ACCEPTS — this is what drives the public /payment_methods and
 // gates payment creation: a wallet with no active holding is invisible to buyers
 // and unusable as a payee. AddToken is an upsert on (wallet, token), so a
-// previously-disabled holding is reactivated rather than duplicated.
+// previously-disabled holding is reactivated rather than duplicated. Like Update
+// and Delete, the token calls act only on the session's own wallet.
 isDefault := true
 holding, _ := client.Wallets.AddToken(ctx, accountID, w.ID, rail0.AddWalletTokenRequest{
     ChainID: 84532,
