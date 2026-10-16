@@ -65,11 +65,40 @@ type Schema struct {
 	Required    []string           `json:"required"`
 	Ref         string             `json:"$ref"`
 	AllOf       []*Schema          `json:"allOf"`
-	Enum        []string           `json:"enum"`
+	Enum        enumValues         `json:"enum"`
 	Items       *Schema            `json:"items"`
 	// Index-aligned with Enum on the gateway's reason-dictionary schemas.
 	EnumDescriptions []string `json:"x-enum-descriptions"`
 	EnumBytes32      []string `json:"x-enum-bytes32"`
+}
+
+// enumValues decodes an `enum` whose members are not all strings. The generator
+// reads enum members only as the codes of the reason dictionaries (strings), but
+// the spec also carries constant-valued fields — QueuedEmail.queued is
+// `{"type": "boolean", "enum": [true]}` — and a plain []string made the whole
+// schema fail to parse. A null member decodes to "" (as it did before); any other
+// non-string is kept in its JSON spelling, which is never used as a code.
+type enumValues []string
+
+func (e *enumValues) UnmarshalJSON(b []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	out := make(enumValues, 0, len(raw))
+	for _, r := range raw {
+		var s string
+		switch {
+		case string(r) == "null":
+			s = ""
+		case json.Unmarshal(r, &s) == nil:
+		default:
+			s = string(r)
+		}
+		out = append(out, s)
+	}
+	*e = out
+	return nil
 }
 
 type OpenAPI struct {
