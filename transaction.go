@@ -27,6 +27,12 @@ type unsignedTx struct {
 	MaxFeePerGas         json.Number `json:"max_fee_per_gas"`
 }
 
+// Deprecated: SignTransaction signs the gateway's transaction BLINDLY — a compromised
+// or misconfigured endpoint could have this key sign an arbitrary transaction. Use
+// SignTransactionFor, which checks the transaction against the payment, the operation
+// and the amount you asked for before the key touches it (VerifyUnsignedTransaction).
+// Kept for compatibility; SignTransactionFor calls it once the check has passed.
+//
 // SignTransaction builds and signs the EIP-1559 (type-2) transaction described
 // by the gateway's `unsigned_transaction` JSON and returns the signed raw
 // transaction as a 0x-prefixed hex string, ready for the submit endpoints.

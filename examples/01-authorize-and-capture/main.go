@@ -79,8 +79,10 @@ func main() {
 	}
 	fmt.Printf("Unsigned authorize tx: %s\n", authPayload.UnsignedTransaction)
 
-	// The payee signs authPayload.UnsignedTransaction offline, then submits:
-	//   signedAuthTx := payeeWallet.SignTransaction(authPayload.UnsignedTransaction)
+	// The payee verifies and signs authPayload.UnsignedTransaction offline, then submits:
+	//   payment, _ := client.Payments.Get(ctx, createResp.Rail0Id)
+	//   signedAuthTx, err := rail0.SignTransactionFor(authPayload.UnsignedTransaction, payeeKey,
+	//       rail0.TxExpectation{Payment: payment, Operation: "authorize"})
 	signedAuthTx := "0x02f8..." // placeholder
 
 	authSubmit, err := client.Payments.Authorize(ctx, createResp.Rail0Id,
