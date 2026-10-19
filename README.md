@@ -409,11 +409,18 @@ tx0, _ := client.Payments.GetTransaction(ctx, rail0ID, transactionID)
 tx1, _ := client.Payments.PrepareWithKey(ctx, rail0ID, rail0.OpCapture, orderID,
     rail0.PrepareRequest{Amount: "50.00"})
 
+// The payment record is what every prepared transaction is CHECKED against before
+// it is signed (see "Signing"): its chain, RAIL0 contract, rail0_id and token decimals.
+payment, _ := client.Payments.Get(ctx, rail0ID)
+
 tx, _ := client.Payments.AuthorizePrepare(ctx, rail0ID)
-// sign tx.UnsignedTransaction → signedBytes
+signedBytes, _ := rail0.SignTransactionFor(tx.UnsignedTransaction, key,
+    rail0.TxExpectation{Payment: payment, Operation: "authorize"})
 client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
 tx, _ = client.Payments.CapturePrepare(ctx, rail0ID, "50.00")
+signedBytes, _ = rail0.SignTransactionFor(tx.UnsignedTransaction, key,
+    rail0.TxExpectation{Payment: payment, Operation: "capture", Amount: "50.00"})
 client.Payments.Capture(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
 // Refund is two-phase. Phase 1 (omit signature) returns a Transaction whose
@@ -421,7 +428,8 @@ client.Payments.Capture(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTrans
 ph1, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00"})
 _ = ph1.SigningPayload
 ph2, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00", Signature: "0x..."})
-// sign ph2.UnsignedTransaction → signedBytes
+signedBytes, _ = rail0.SignTransactionFor(ph2.UnsignedTransaction, key,
+    rail0.TxExpectation{Payment: payment, Operation: "refund", Amount: "10.00"})
 client.Payments.Refund(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
 // Generic op helpers also exist:
@@ -465,7 +473,8 @@ broadcasts the signed raw tx. The on-chain event then flips the payment's
 // exactly that code's bytes32 as rail0.DisputeReason("0x…"). Omit it to open the
 // dispute with no reason: client.Payments.DisputePrepare(ctx, rail0ID).
 tx, _ := client.Payments.DisputePrepare(ctx, rail0ID, rail0.DisputeOpenReasonNotReceived)
-// sign tx.UnsignedTransaction → signedBytes
+signedBytes, _ := rail0.SignTransactionFor(tx.UnsignedTransaction, payerKey,
+    rail0.TxExpectation{Payment: payment, Operation: "dispute"})
 client.Payments.Dispute(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
 // Close a dispute (payer only), optionally with a reason from the CLOSE list
@@ -659,8 +668,13 @@ signature are needed across the lifecycle:
 ```go
 key, _ := rail0.HexToPrivateKey("0x…") // 0x-hex → 32 raw bytes
 
-// EIP-1559: sign a prepare step's unsigned_transaction → raw hex for submit.
-raw, _ := rail0.SignTransaction(tx.UnsignedTransaction, key)
+// EIP-1559: verify, then sign a prepare step's unsigned_transaction → raw hex for
+// submit. The expectation is the payment record you already hold, the operation you
+// prepared, and (capture/refund only) the human amount you passed to the prepare.
+payment, _ := client.Payments.Get(ctx, rail0ID)
+raw, err := rail0.SignTransactionFor(tx.UnsignedTransaction, key,
+    rail0.TxExpectation{Payment: payment, Operation: "authorize"})
+if err != nil { /* "rail0: refusing to sign: …" — nothing was signed */ }
 client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: raw})
 
 // EIP-3009 authorization: sign the gateway's signing_payload VERBATIM. One call
@@ -675,8 +689,30 @@ client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature
 sig, _ = rail0.SignSigningPayload(payeeKey, phase1.SigningPayload)
 ```
 
-Signing helpers: `HexToPrivateKey`, `SignTransaction`, **`SignSigningPayload`**,
-`PackSignature`, `SignTransferWithAuthorization`, `SignReceiveWithAuthorizationRaw`.
+Signing helpers: `HexToPrivateKey`, **`SignTransactionFor`**, **`SignSigningPayload`**,
+`PackSignature`, `SignTransferWithAuthorization`, `SignReceiveWithAuthorizationRaw`;
+`VerifyUnsignedTransaction` and `SignerAddress` run the pre-sign check on their own,
+for a signer that is not a local key (a KMS, a hardware wallet).
+
+**What `SignTransactionFor` verifies, and why.** The gateway builds the EIP-1559
+transaction and your key signs it, so a compromised or misconfigured endpoint could
+otherwise have that key sign anything — an `approve(spender, MAX)` on the token, a
+`capture` answered to a `void` prepare, a capture for more than you asked.
+`SignTransactionFor` checks the transaction **before** the key touches it, against data
+you already hold (no extra request): `value` is zero (every RAIL0 operation is
+value-0), `chain_id` is the payment's chain, `from` is your key's address, `to` is the
+payment's `rail0_contract`, the 4-byte selector is the RAIL0 function for `Operation`
+(the selectors are derived from the contract's function signatures, `Rail0Selectors`,
+and pinned against its ABI in the test suite), the first calldata word is the payment's
+`rail0_id`, and — for `capture` and `refund` — the amount word equals `Amount` scaled by
+the payment's `Decimals`. The first mismatch returns an error starting with
+`rail0: refusing to sign:` naming the field, and no signature is produced. It fails
+closed: a capture/refund with no `Amount`, or a payment with unknown `Decimals`, is
+refused rather than skipped, so read the payment with `Payments.Get` first. `to` is a
+consistency check only — the address comes from the same gateway — which is why the
+calldata binding to this payment's id and operation is what closes a swapped
+transaction. `SignTransaction` (no expectation) still signs blindly and is
+**deprecated**.
 
 **The gateway builds the payload; you sign it verbatim.** Only the gateway knows
 which contract version a payment lives on, and the version selects the typehash,
