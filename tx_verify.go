@@ -130,6 +130,17 @@ func isZeroNativeValue(raw json.RawMessage) bool {
 	return s == "" || s == "null" || s == "0" || strings.EqualFold(s, "0x0")
 }
 
+// isHexAddress reports whether s is a 0x-prefixed, 20-byte hex address. Strict on
+// purpose: the comparisons it guards are case-insensitive string equality, and a
+// value that is not an address must never reach them as "" or as a lookalike.
+func isHexAddress(s string) bool {
+	if len(s) != 42 || (s[:2] != "0x" && s[:2] != "0X") {
+		return false
+	}
+	_, err := hex.DecodeString(s[2:])
+	return err == nil
+}
+
 // SignerAddress is the 0x-prefixed, lowercase address a private key signs as — what
 // the transaction's `from` must name.
 func SignerAddress(privateKey []byte) (string, error) {
@@ -152,17 +163,20 @@ func SignerAddress(privateKey []byte) (string, error) {
 //     transfers the contract performs, so a non-zero value is the gateway asking for ETH;
 //  3. `chain_id` is the payment's chain;
 //  4. `from`, when present, is the signing key's address;
-//  5. `to` is the payment's rail0_contract — a consistency check (the address comes
-//     from the same gateway), but it catches a response stitched from two payments;
+//  5. `to` is a well-formed address equal to the payment's rail0_contract — required
+//     on both sides, since an absent `to` is a contract creation. A consistency check
+//     (the address comes from the same gateway), but it catches a response stitched
+//     from two payments;
 //  6. the 4-byte selector is the RAIL0 function for the operation, and for capture
 //     and refund the amount word equals Amount scaled by the payment's Decimals;
 //  7. the paymentId word is the payment's rail0_id.
 //
 // Every right-hand side is something the caller supplied or derived locally — never
 // the prepare response itself. FAIL-CLOSED on what cannot be compared: an unknown
-// operation, a capture/refund without an Amount, or a payment with unknown Decimals
-// refuses rather than skips. Only the paymentId comparison is skipped, when the
-// payment carries no usable rail0_id.
+// operation, a capture/refund without an Amount, a payment with unknown Decimals, or
+// a missing `to` / rail0_contract refuses rather than skips. Only the chain (payment
+// with no chain_id), `from` (no signer given or no `from` in the transaction) and
+// paymentId (no usable rail0_id) comparisons are skipped.
 func VerifyUnsignedTransaction(unsignedJSON string, signer string, want TxExpectation) error {
 	var tx unsignedTxHeader
 	if err := json.Unmarshal([]byte(unsignedJSON), &tx); err != nil {
@@ -185,7 +199,16 @@ func VerifyUnsignedTransaction(unsignedJSON string, signer string, want TxExpect
 		return refuse("transaction is prepared from %s but the signing key is %s", tx.From, signer)
 	}
 
-	if p.Rail0Contract != "" && tx.To != "" && !strings.EqualFold(tx.To, string(p.Rail0Contract)) {
+	// `to` is never optional: an empty one is a contract CREATION, and the signer would
+	// deploy whatever the calldata holds. SignTransaction refuses it too, but the check
+	// must not depend on which signer runs next (a KMS or hardware wallet may not).
+	if !isHexAddress(tx.To) {
+		return refuse("transaction has no valid `to` address (%q); it must be this payment's RAIL0 contract", tx.To)
+	}
+	if !isHexAddress(string(p.Rail0Contract)) {
+		return refuse("the payment carries no valid rail0_contract (%q), so the transaction's `to` cannot be checked (fetch the payment with Get first)", p.Rail0Contract)
+	}
+	if !strings.EqualFold(tx.To, string(p.Rail0Contract)) {
 		return refuse("transaction is addressed to %s but this payment's RAIL0 contract is %s", tx.To, p.Rail0Contract)
 	}
 
@@ -324,4 +347,218 @@ func SignTransactionFor(unsignedJSON string, privateKey []byte, want TxExpectati
 		return "", err
 	}
 	return SignTransaction(unsignedJSON, privateKey)
+}
+
+// ================================================================
+//  Pre-sign verification of a gateway-built EIP-3009 signing payload
+// ================================================================
+//
+// The unsigned transaction is the LESS dangerous of the two artifacts the gateway asks
+// a key to sign. A malicious transaction costs gas and goes through RAIL0; an EIP-3009
+// authorization is a bearer instrument the TOKEN honours directly, with no RAIL0
+// involvement, for up to message.value. An endpoint that answered a refund prepare
+// with {from: <payee>, to: <attacker>, value: <the payee's whole balance>} would get
+// that signed verbatim by SignSigningPayload and could replay it against the token.
+//
+// Ported from the rail0 CLI's verifySigningPayload (cmd/tx_verify.go), which is the
+// reference for the check order and the wording. Asserting here does NOT break the
+// sign-the-payload-verbatim rule (#27): the typehash still comes from the payload's
+// own primaryType and the digest from its own message; this only refuses a message
+// whose fields contradict what the caller asked for.
+
+// PayloadExpectation is what the caller independently knows about the EIP-3009
+// authorization it asked the gateway to build. Unlike the CLI's internal copy, every
+// field is REQUIRED: VerifySigningPayload refuses rather than skips a check it cannot
+// make, since the value check skipped on an unknown is exactly the drain this guards
+// against.
+//
+// Build it from data the gateway did not just hand back where you can: for a create,
+// the request you sent (ChainID, Token, and Value = your human amount scaled by the
+// token's decimals); for a payment already fetched, PayloadExpectationFor.
+type PayloadExpectation struct {
+	// Signer is the address of the key about to sign: message.from must equal it.
+	// SignSigningPayloadFor fills it from the key; VerifySigningPayload requires it
+	// (SignerAddress derives it).
+	Signer Address
+	// ChainID is the chain the authorization must be scoped to: domain.chainId.
+	ChainID int
+	// Token is the token the authorization must be against. For EIP-3009 the EIP-712
+	// domain's verifyingContract IS the token.
+	Token Address
+	// To is who the authorization must pay: message.to, the payment's RAIL0 contract
+	// (Payment.Rail0Contract). A consistency check only — that address comes from the
+	// same gateway.
+	To Address
+	// Value is the exact amount, in TOKEN BASE UNITS, message.value must equal. Exact,
+	// not a ceiling: the gateway always asks for the operation's full amount.
+	Value Uint256String
+}
+
+// PayloadExpectationFor builds the expectation for a payment already fetched from the
+// gateway (Payments.Get), the way the CLI's `payments sign` and `payments refund` do:
+// chain, token and RAIL0 contract from the payment record, and the value from
+//
+//   - amount == "": the payment's own stored base-unit Amount — for re-signing an
+//     unsigned payment, where the payment is what the payer is agreeing to;
+//   - otherwise: amount, a HUMAN decimal you chose (e.g. the refund amount you pass to
+//     RefundPrepare), scaled by the payment's Decimals.
+//
+// Signer is left empty: SignSigningPayloadFor fills it from the key. It fails closed —
+// a nil payment, a missing chain_id, token or rail0_contract, unknown Decimals for a
+// human amount, or an amount finer than the token allows is an error, not a skipped
+// check.
+func PayloadExpectationFor(p *Payment, amount string) (PayloadExpectation, error) {
+	if p == nil {
+		return PayloadExpectation{}, refuse("cannot check the authorization without the payment it is for")
+	}
+	want := PayloadExpectation{ChainID: p.ChainID, Token: p.Token, To: p.Rail0Contract}
+	if amount == "" {
+		want.Value = p.Amount
+		return want, nil
+	}
+	if p.Decimals == nil {
+		return PayloadExpectation{}, refuse("the payment's token decimals are unknown, so the authorization's amount cannot be checked (fetch the payment with Get first)")
+	}
+	units, err := ToBaseUnits(amount, *p.Decimals)
+	if err != nil {
+		return PayloadExpectation{}, refuse("amount %q: %w", amount, err)
+	}
+	want.Value = units
+	return want, nil
+}
+
+// VerifySigningPayload checks a gateway-built EIP-3009 signing payload against what
+// the caller asked for, BEFORE any key touches it. It returns an error naming the first
+// field that disagrees — always starting "rail0: refusing to sign:" — and nil otherwise.
+//
+// In order (the CLI's order):
+//
+//  1. message.from is want.Signer — the one right-hand side derived locally from the
+//     private key, so it holds whatever the endpoint claims;
+//  2. domain.chainId is want.ChainID;
+//  3. domain.verifyingContract is want.Token — this stops an authorization minted
+//     against another token the signer happens to hold;
+//  4. message.to is want.To, the payment's RAIL0 contract;
+//  5. message.value is exactly want.Value, in base units.
+//
+// It also refuses a payload SignSigningPayloadFor could not sign faithfully: an unknown
+// primaryType, or a value/validAfter/validBefore that is not a uint256. validAfter and
+// validBefore are not compared (the CLI does not either): the gateway derives them from
+// the payment's expiries, which a caller does not hold independently.
+//
+// FAIL-CLOSED: a nil payload, or an expectation with any field empty, is refused
+// rather than skipped — the CLI skips an unknown field, but its callers always supply
+// every one, and the value check skipped is the unbounded drain this exists to stop.
+//
+// What it does NOT establish: message.nonce is not recomputed. For authorize/charge it
+// binds the signature to the payment terms on-chain, but recomputing it needs the
+// deployment's contract version, which no payment response carries; so a nonce for
+// different terms (another payee) is not detectable here. The bounded residual is an
+// authorization for the right token, chain and signer, for exactly the amount asked —
+// a loss of at most the intended amount instead of a drain of the balance.
+func VerifySigningPayload(sp *SigningPayload, want PayloadExpectation) error {
+	if sp == nil {
+		return refuse("there is no signing payload to check (Create answers 502 signing_payload_unavailable when it cannot build one)")
+	}
+	if err := checkPayloadExpectation(want); err != nil {
+		return err
+	}
+
+	if sp.PrimaryType != PrimaryTypeTransfer && sp.PrimaryType != PrimaryTypeReceive {
+		return refuse("the authorization's primaryType %q is not one this SDK knows (%s or %s): it is older than the gateway it is talking to",
+			sp.PrimaryType, PrimaryTypeTransfer, PrimaryTypeReceive)
+	}
+
+	if !strings.EqualFold(string(sp.Message.From), string(want.Signer)) {
+		return refuse("the authorization is from %s (message.from) but the signing key is %s", sp.Message.From, want.Signer)
+	}
+	if sp.Domain.ChainId != want.ChainID {
+		return refuse("the authorization is scoped to chain %d (domain.chainId) but this payment is on chain %d", sp.Domain.ChainId, want.ChainID)
+	}
+	if !strings.EqualFold(string(sp.Domain.VerifyingContract), string(want.Token)) {
+		return refuse("the authorization is against token %s (domain.verifyingContract) but this payment's token is %s", sp.Domain.VerifyingContract, want.Token)
+	}
+	if !strings.EqualFold(string(sp.Message.To), string(want.To)) {
+		return refuse("the authorization pays %s (message.to) but this payment's RAIL0 contract is %s", sp.Message.To, want.To)
+	}
+
+	// Range-checked parse first, so a hostile value is named as malformed rather than
+	// as merely "different", then an exact base-unit comparison.
+	value, err := payloadInt("value", sp.Message.Value)
+	if err != nil {
+		return refuse("%s", strings.TrimPrefix(err.Error(), "rail0: "))
+	}
+	wantValue, _ := new(big.Int).SetString(string(want.Value), 10) // validated above
+	if value.Cmp(wantValue) != 0 {
+		return refuse("the authorization is for %s base units (message.value) but you asked for %s", sp.Message.Value, want.Value)
+	}
+	for _, f := range []struct {
+		name string
+		raw  Uint256String
+	}{{"validAfter", sp.Message.ValidAfter}, {"validBefore", sp.Message.ValidBefore}} {
+		if _, err := payloadInt(f.name, f.raw); err != nil {
+			return refuse("%s", strings.TrimPrefix(err.Error(), "rail0: "))
+		}
+	}
+	return nil
+}
+
+// checkPayloadExpectation refuses an expectation that cannot back every comparison:
+// each field missing, or not the shape it must have, names itself.
+func checkPayloadExpectation(want PayloadExpectation) error {
+	for _, a := range []struct{ field, value string }{
+		{"Signer", string(want.Signer)}, {"Token", string(want.Token)}, {"To", string(want.To)},
+	} {
+		if !isHexAddress(a.value) {
+			return refuse("cannot check the authorization without a valid expected %s address (got %q)", a.field, a.value)
+		}
+	}
+	if want.ChainID <= 0 {
+		return refuse("cannot check the authorization without the expected chain id")
+	}
+	if want.Value == "" {
+		return refuse("cannot check the authorization's amount without the amount you asked for")
+	}
+	n, ok := new(big.Int).SetString(string(want.Value), 10)
+	if !ok || checkUint256(uintArg{"expected Value", n}) != nil {
+		return refuse("expected Value %q is not a base-unit uint256 integer", want.Value)
+	}
+	return nil
+}
+
+// SignSigningPayloadFor verifies the gateway's EIP-3009 signing payload against what
+// the caller asked for (VerifySigningPayload, with the key's own address as the
+// expected signer) and only then signs it verbatim — the signer every RAIL0 flow
+// should use: authorize, charge and refund alike. A payload that fails the check
+// leaves no signature behind; one that passes is signed byte-identically to the
+// deprecated SignSigningPayload.
+//
+// want.Signer may be left empty (it is filled from the key); when set it must be the
+// key's address, or the call is refused.
+//
+//	// create: the expectation is the request you sent, not the response
+//	units, _ := rail0.ToBaseUnits(req.Amount, decimals) // decimals of req.Token, e.g. 6 for USDC
+//	created, _ := client.Payments.Create(ctx, req)
+//	sig, err := rail0.SignSigningPayloadFor(created.SigningPayload, payerKey, rail0.PayloadExpectation{
+//	    ChainID: req.ChainID, Token: req.Token, To: created.Rail0Contract, Value: units,
+//	})
+//	if err != nil { /* "rail0: refusing to sign: …" — nothing was signed */ }
+//	client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: rail0.PackSignature(sig)})
+//
+//	// refund phase 1: the payee signs for the amount it chose
+//	want, _ := rail0.PayloadExpectationFor(payment, "10.00")
+//	sig, err = rail0.SignSigningPayloadFor(phase1.SigningPayload, payeeKey, want)
+func SignSigningPayloadFor(sp *SigningPayload, privateKey []byte, want PayloadExpectation) (Eip3009Signature, error) {
+	signer, err := SignerAddress(privateKey)
+	if err != nil {
+		return Eip3009Signature{}, err
+	}
+	if want.Signer != "" && !strings.EqualFold(string(want.Signer), signer) {
+		return Eip3009Signature{}, refuse("the expected signer %s is not the signing key's address %s", want.Signer, signer)
+	}
+	want.Signer = Address(signer)
+	if err := VerifySigningPayload(sp, want); err != nil {
+		return Eip3009Signature{}, err
+	}
+	return signSigningPayload(privateKey, sp)
 }

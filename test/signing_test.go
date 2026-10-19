@@ -690,3 +690,172 @@ func TestPackSignature(t *testing.T) {
 		t.Error("packed signature does not carry r then s")
 	}
 }
+
+// ================================================================
+//  uint256 range — values encodeUint256 cannot represent (S4)
+// ================================================================
+//
+// encodeUint256 used to panic ("slice bounds out of range") on any value >= 2^256 and
+// to encode a negative one as its absolute value. Every signer must now refuse both
+// with an error naming the field, never panic and never sign another number.
+
+var (
+	two256      = new(big.Int).Lsh(big.NewInt(1), 256)
+	uint256Max  = new(big.Int).Sub(two256, big.NewInt(1))
+	hugePayload = two256.String() // 2^256, one past the max
+)
+
+func noPanic(t *testing.T, name string, f func() error) error {
+	t.Helper()
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("%s panicked: %v", name, r)
+			}
+		}()
+		err = f()
+	}()
+	return err
+}
+
+func TestSignSigningPayload_RefusesValuesOutsideUint256(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+	for _, tc := range []struct {
+		field  string
+		mutate func(*rail0.SigningPayload)
+	}{
+		{"value", func(p *rail0.SigningPayload) { p.Message.Value = hugePayload }},
+		{"value", func(p *rail0.SigningPayload) { p.Message.Value = "-1" }},
+		{"validAfter", func(p *rail0.SigningPayload) { p.Message.ValidAfter = hugePayload }},
+		{"validBefore", func(p *rail0.SigningPayload) { p.Message.ValidBefore = "-5" }},
+	} {
+		p := testPayload(rail0.PrimaryTypeTransfer)
+		tc.mutate(p)
+		err := noPanic(t, "SignSigningPayload", func() error { _, err := rail0.SignSigningPayload(key, p); return err })
+		if err == nil || !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("%s out of range: want an error naming it, got %v", tc.field, err)
+		}
+	}
+
+	// The boundary itself is a valid uint256 and must still sign.
+	p := testPayload(rail0.PrimaryTypeTransfer)
+	p.Message.Value = uint256Max.String()
+	if _, err := rail0.SignSigningPayload(key, p); err != nil {
+		t.Errorf("2^256-1 is a valid uint256 and must sign: %v", err)
+	}
+}
+
+func TestRawSigners_RefuseValuesOutsideUint256(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+	valid := big.NewInt(1)
+
+	transfer := func(value, after, before *big.Int) error {
+		_, err := rail0.SignTransferWithAuthorization(key, testDomain, rail0.SignTransferParams{
+			From: payerAddress, To: contractAddress, Value: value,
+			ValidAfter: after, ValidBefore: before, Nonce: testNonce,
+		})
+		return err
+	}
+	receive := func(value, after, before *big.Int) error {
+		_, err := rail0.SignReceiveWithAuthorizationRaw(rail0.SignReceiveParams{
+			PrivateKey: key, TokenDomain: testDomain, From: payeeAddress, To: contractAddress,
+			Value: value, ValidAfter: after, ValidBefore: before, Nonce: testNonce,
+		})
+		return err
+	}
+
+	for name, sign := range map[string]func(v, a, b *big.Int) error{
+		"SignTransferWithAuthorization":   transfer,
+		"SignReceiveWithAuthorizationRaw": receive,
+	} {
+		for _, tc := range []struct {
+			field   string
+			v, a, b *big.Int
+		}{
+			{"Value", two256, valid, valid},
+			{"Value", big.NewInt(-1), valid, valid},
+			{"ValidAfter", valid, two256, valid},
+			{"ValidBefore", valid, valid, two256},
+			{"ValidBefore", valid, valid, nil},
+		} {
+			err := noPanic(t, name, func() error { return sign(tc.v, tc.a, tc.b) })
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("%s with bad %s: want an error naming it, got %v", name, tc.field, err)
+			}
+		}
+		if err := sign(uint256Max, valid, valid); err != nil {
+			t.Errorf("%s: 2^256-1 is a valid uint256 and must sign: %v", name, err)
+		}
+	}
+
+	// The record-derived signers: an amount past 2^256, a negative expiry.
+	huge := testPayment
+	huge.Amount = hugePayload
+	err := noPanic(t, "SignAuthorize", func() error {
+		_, err := rail0.SignAuthorize(rail0.SignPaymentParams{PrivateKey: key, Payment: huge, Nonce: testNonce,
+			ContractAddress: contractAddress, TokenDomain: testDomain})
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "Payment.Amount") {
+		t.Errorf("SignAuthorize with Amount >= 2^256: want an error naming it, got %v", err)
+	}
+	negative := testPayment
+	negative.RefundExpiry = -1
+	err = noPanic(t, "SignReceiveWithAuthorization", func() error {
+		_, err := rail0.SignReceiveWithAuthorization(rail0.SignPaymentParams{PrivateKey: key, Payment: negative,
+			Amount: valid, Nonce: testNonce, ContractAddress: contractAddress, TokenDomain: testDomain})
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "RefundExpiry") {
+		t.Errorf("SignReceiveWithAuthorization with a negative expiry: want an error naming it, got %v", err)
+	}
+}
+
+// ================================================================
+//  SignSigningPayloadFor — verify the payload, then sign it verbatim
+// ================================================================
+
+func payloadExpectation() rail0.PayloadExpectation {
+	return rail0.PayloadExpectation{ChainID: 8453, Token: tokenAddress, To: contractAddress, Value: "50000000"}
+}
+
+func TestSignSigningPayloadFor_SignsWhatTheBlindSignerSigns(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+	for _, pt := range []string{rail0.PrimaryTypeTransfer, rail0.PrimaryTypeReceive} {
+		checked, err := rail0.SignSigningPayloadFor(testPayload(pt), key, payloadExpectation())
+		if err != nil {
+			t.Fatalf("%s: refused a well-formed payload: %v", pt, err)
+		}
+		blind, _ := rail0.SignSigningPayload(key, testPayload(pt))
+		if rail0.PackSignature(checked) != rail0.PackSignature(blind) {
+			t.Errorf("%s: a verified signature must be byte-identical to the blind one", pt)
+		}
+	}
+}
+
+func TestSignSigningPayloadFor_RefusesBeforeSigning(t *testing.T) {
+	key, _ := rail0.HexToPrivateKey(privateKeyHex)
+
+	drain := testPayload(rail0.PrimaryTypeReceive)
+	drain.Message.Value = "999999999999"
+	if sig, err := rail0.SignSigningPayloadFor(drain, key, payloadExpectation()); err == nil || sig != (rail0.Eip3009Signature{}) ||
+		!strings.HasPrefix(err.Error(), "rail0: refusing to sign:") || !strings.Contains(err.Error(), "message.value") {
+		t.Errorf("an inflated value must be refused with no signature, got %v / %+v", err, sig)
+	}
+
+	// The key is the payer's, but the expectation claims someone else as the signer.
+	other := payloadExpectation()
+	other.Signer = payeeAddress
+	if _, err := rail0.SignSigningPayloadFor(testPayload(rail0.PrimaryTypeTransfer), key, other); err == nil ||
+		!strings.Contains(err.Error(), "expected signer") {
+		t.Errorf("an expected signer other than the key must be refused, got %v", err)
+	}
+
+	// Signed with the payee key, the payload's from (the payer) is not the signer.
+	payeeKey, _ := rail0.HexToPrivateKey(payeePrivateKeyHex)
+	if _, err := rail0.SignSigningPayloadFor(testPayload(rail0.PrimaryTypeTransfer), payeeKey, payloadExpectation()); err == nil ||
+		!strings.Contains(err.Error(), "the signing key is "+strings.ToLower(payeeAddress)) {
+		t.Errorf("a payload from another address must be refused naming the key, got %v", err)
+	}
+}

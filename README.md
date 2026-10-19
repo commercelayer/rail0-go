@@ -424,10 +424,11 @@ signedBytes, _ = rail0.SignTransactionFor(tx.UnsignedTransaction, key,
 client.Payments.Capture(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
 
 // Refund is two-phase. Phase 1 (omit signature) returns a Transaction whose
-// SigningPayload the payee signs; phase 2 supplies the signature.
+// SigningPayload the payee verifies and signs; phase 2 supplies the signature.
 ph1, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00"})
-_ = ph1.SigningPayload
-ph2, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00", Signature: "0x..."})
+want, _ := rail0.PayloadExpectationFor(payment, "10.00")
+sig, _ := rail0.SignSigningPayloadFor(ph1.SigningPayload, key, want)
+ph2, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00", Signature: rail0.PackSignature(sig)})
 signedBytes, _ = rail0.SignTransactionFor(ph2.UnsignedTransaction, key,
     rail0.TxExpectation{Payment: payment, Operation: "refund", Amount: "10.00"})
 client.Payments.Refund(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: signedBytes})
@@ -677,22 +678,64 @@ raw, err := rail0.SignTransactionFor(tx.UnsignedTransaction, key,
 if err != nil { /* "rail0: refusing to sign: …" — nothing was signed */ }
 client.Payments.Authorize(ctx, rail0ID, rail0.SubmitTransactionRequest{SignedTransaction: raw})
 
-// EIP-3009 authorization: sign the gateway's signing_payload VERBATIM. One call
-// for every operation — authorize, charge, refund — because which typehash and
-// which fields to use is stated by the payload itself.
-sig, _ := rail0.SignSigningPayload(key, created.SigningPayload)
+// EIP-3009 authorization: verify, then sign the gateway's signing_payload VERBATIM.
+// One call for every operation — authorize, charge, refund — because which typehash
+// and which fields to use is stated by the payload itself.
+//
+// Create: build the expectation from the REQUEST you sent, not from the response
+// being checked. Value is your human amount scaled by the token's decimals (from
+// Tokens.List, or the registry, e.g. 6 for USDC).
+req := rail0.CreatePaymentRequest{ChainID: 8453, Mode: "authorize", Amount: "50.00",
+    Token: usdc, Payer: buyer, Payee: merchant}
+units, _ := rail0.ToBaseUnits(req.Amount, 6) // "50000000"
+created, _ := client.Payments.Create(ctx, req)
+sig, err := rail0.SignSigningPayloadFor(created.SigningPayload, key, rail0.PayloadExpectation{
+    ChainID: req.ChainID, Token: req.Token, To: created.Rail0Contract, Value: units,
+})
+if err != nil { /* "rail0: refusing to sign: …" — nothing was signed */ }
 packed := rail0.PackSignature(sig) // 0x + r || s || v, what the gateway expects
 client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
 
+// Re-signing a payment that is still unsigned: the payment record is what the payer
+// agrees to, so its stored amount is the expectation ("" = Payment.Amount).
+payment, _ = client.Payments.Get(ctx, rail0ID)
+want, _ := rail0.PayloadExpectationFor(payment, "")
+sig, err = rail0.SignSigningPayloadFor(payment.SigningPayload, key, want)
+
 // A refund is the same call with the PAYEE's key — the refund payload's `from` is
-// the payee, since the funds being moved are already the merchant's.
-sig, _ = rail0.SignSigningPayload(payeeKey, phase1.SigningPayload)
+// the payee, since the funds being moved are already the merchant's. The value is
+// the human refund amount YOU chose, scaled by the payment's Decimals.
+phase1, _ := client.Payments.RefundPrepare(ctx, rail0ID, rail0.PrepareRequest{Amount: "10.00"})
+want, _ = rail0.PayloadExpectationFor(payment, "10.00")
+sig, err = rail0.SignSigningPayloadFor(phase1.SigningPayload, payeeKey, want)
 ```
 
-Signing helpers: `HexToPrivateKey`, **`SignTransactionFor`**, **`SignSigningPayload`**,
-`PackSignature`, `SignTransferWithAuthorization`, `SignReceiveWithAuthorizationRaw`;
-`VerifyUnsignedTransaction` and `SignerAddress` run the pre-sign check on their own,
-for a signer that is not a local key (a KMS, a hardware wallet).
+Signing helpers: `HexToPrivateKey`, **`SignTransactionFor`**, **`SignSigningPayloadFor`**,
+`PayloadExpectationFor`, `PackSignature`, `SignTransferWithAuthorization`,
+`SignReceiveWithAuthorizationRaw`; `VerifyUnsignedTransaction`, `VerifySigningPayload`
+and `SignerAddress` run the pre-sign checks on their own, for a signer that is not a
+local key (a KMS, a hardware wallet, `eth_signTypedData_v4` in a browser wallet).
+
+**What `SignSigningPayloadFor` verifies, and why.** An EIP-3009 authorization is the
+*more* dangerous of the two artifacts: the token honours it directly, with no RAIL0
+involvement, for up to `message.value`. An endpoint that answered a refund prepare
+with `{to: <attacker>, value: <your whole balance>}` would otherwise get exactly that
+signed. Before the key touches the payload it checks, in order (the rail0 CLI's rules):
+`message.from` is your key's address, `domain.chainId` is the expected chain,
+`domain.verifyingContract` is the expected token, `message.to` is the payment's
+`rail0_contract`, and `message.value` is exactly the expected base-unit amount; it also
+refuses an unknown `primaryType` and any value, `validAfter` or `validBefore` outside the
+uint256 range. The first mismatch returns an error starting with
+`rail0: refusing to sign:` naming the field (e.g. `(message.value)`), and no signature
+is produced. It fails closed: a nil payload or a `PayloadExpectation` with any field
+empty is refused rather than skipped, and `PayloadExpectationFor` refuses a human amount
+when the payment's `Decimals` are unknown. Not checked: `validAfter`/`validBefore` (the
+gateway derives them from the payment's expiries) and `message.nonce`, which binds the
+signature to the payment terms on-chain but cannot be recomputed without the
+deployment's contract version — so the bounded residual is an authorization for the
+right token, chain and signer, for exactly the amount you asked. `SignSigningPayload`
+(no expectation) still signs blindly and is **deprecated**; it is kept for
+compatibility and signs byte-identically once the checks pass.
 
 **What `SignTransactionFor` verifies, and why.** The gateway builds the EIP-1559
 transaction and your key signs it, so a compromised or misconfigured endpoint could
@@ -700,8 +743,9 @@ otherwise have that key sign anything — an `approve(spender, MAX)` on the toke
 `capture` answered to a `void` prepare, a capture for more than you asked.
 `SignTransactionFor` checks the transaction **before** the key touches it, against data
 you already hold (no extra request): `value` is zero (every RAIL0 operation is
-value-0), `chain_id` is the payment's chain, `from` is your key's address, `to` is the
-payment's `rail0_contract`, the 4-byte selector is the RAIL0 function for `Operation`
+value-0), `chain_id` is the payment's chain, `from` is your key's address, `to` is a
+well-formed address equal to the payment's `rail0_contract` (an empty `to` would be a
+contract creation, so a missing `to` or `rail0_contract` refuses), the 4-byte selector is the RAIL0 function for `Operation`
 (the selectors are derived from the contract's function signatures, `Rail0Selectors`,
 and pinned against its ABI in the test suite), the first calldata word is the payment's
 `rail0_id`, and — for `capture` and `refund` — the amount word equals `Amount` scaled by
@@ -716,7 +760,7 @@ transaction. `SignTransaction` (no expectation) still signs blindly and is
 
 **The gateway builds the payload; you sign it verbatim.** Only the gateway knows
 which contract version a payment lives on, and the version selects the typehash,
-the EIP-712 domain *and* the field layout. `SignSigningPayload` takes all three
+the EIP-712 domain *and* the field layout. `SignSigningPayloadFor` takes all three
 from the payload, so a contract change — rail0#58 moves authorize/charge to
 `ReceiveWithAuthorization` — needs no change here. An unrecognised `primaryType`
 returns an error naming the version skew rather than falling back, because a
