@@ -121,8 +121,8 @@ resp, _ := client.Auth.Verify(ctx, rail0.AuthRequest{
 // Or do the whole flow with a raw private key:
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz")
 
-// Login embeds SIWE chain id 1 by default. Pass an explicit chain id to match a
-// gateway whose SIWE_CHAIN_ID policy differs:
+// Login embeds SIWE chain id 1 by default. The gateway also accepts the id of any
+// chain it has active (GET /blockchains), e.g. the network the wallet is on:
 resp, _ = client.Auth.Login(ctx, privKeyBytes, "api.rail0.xyz", 5042002)
 
 // The same SIWE handshake, without logging in, produces a proof-of-ownership of
