@@ -132,6 +132,11 @@ func encodeAddress(addr Address) []byte {
 	return out
 }
 
+// encodeUint256 left-pads v into one 32-byte ABI word. It requires 0 <= v < 2^256:
+// a wider value would make the copy below slice out of range (a panic), and a
+// negative one would be encoded as its absolute value (big.Int.Bytes drops the sign),
+// silently signing a different number. Every public signer therefore validates its
+// integers with checkUint256 before building a digest.
 func encodeUint256(v *big.Int) []byte {
 	out := make([]byte, 32)
 	b := v.Bytes()
@@ -144,6 +149,34 @@ func encodeBytes32(h Bytes32) []byte {
 	out := make([]byte, 32)
 	copy(out, b)
 	return out
+}
+
+// uint256Max is 2^256 - 1, the largest value a uint256 ABI word can hold.
+var uint256Max = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+
+// uintArg names an integer about to be ABI-encoded, so a refusal says which field.
+type uintArg struct {
+	name string
+	v    *big.Int
+}
+
+// checkUint256 refuses any integer encodeUint256 cannot represent faithfully: nil
+// (which would panic on .Bytes()), negative (encoded as its absolute value) or at
+// least 2^256 (which used to panic with "slice bounds out of range"). It is the guard
+// every signer runs before building a digest, so hostile or mistyped input becomes an
+// error naming the field instead of a crash or a signature over another number.
+func checkUint256(args ...uintArg) error {
+	for _, a := range args {
+		switch {
+		case a.v == nil:
+			return fmt.Errorf("rail0: %s is required", a.name)
+		case a.v.Sign() < 0:
+			return fmt.Errorf("rail0: %s %s is negative: want a uint256", a.name, a.v)
+		case a.v.Cmp(uint256Max) > 0:
+			return fmt.Errorf("rail0: %s %s does not fit in a uint256 (must be below 2^256)", a.name, a.v)
+		}
+	}
+	return nil
 }
 
 func concat(parts ...[]byte) []byte {
@@ -239,6 +272,9 @@ func authorizedValue(params SignPaymentParams) (*big.Int, error) {
 	if !ok {
 		return nil, fmt.Errorf("rail0: invalid Payment.Amount %q: want a base-unit decimal integer string", params.Payment.Amount)
 	}
+	if err := checkUint256(uintArg{"Payment.Amount", value}); err != nil {
+		return nil, err
+	}
 	if params.Amount != nil && params.Amount.Cmp(value) != 0 {
 		return nil, fmt.Errorf("rail0: Amount %s disagrees with Payment.Amount %s: the contract signs the payment amount, so leave Amount nil or pass the same value",
 			params.Amount, value)
@@ -259,8 +295,15 @@ const (
 	PrimaryTypeReceive  = "ReceiveWithAuthorization"
 )
 
-// SignSigningPayload signs the gateway's signing_payload VERBATIM and is the
-// signer every RAIL0 flow should use — authorize, charge and refund alike.
+// SignSigningPayload signs the gateway's signing_payload VERBATIM, WITHOUT checking
+// it against anything the caller asked for.
+//
+// Deprecated: use SignSigningPayloadFor, which runs VerifySigningPayload first. An
+// EIP-3009 authorization is a bearer instrument the TOKEN honours directly, with no
+// RAIL0 involvement, for up to message.value: a hostile or misconfigured endpoint that
+// answers with {to: <attacker>, value: <your whole balance>} gets exactly that signed
+// here. Kept for compatibility; it signs byte-identically to SignSigningPayloadFor once
+// that function's checks have passed.
 //
 // The typehash comes from sp.PrimaryType, every message field from sp.Message, the
 // domain from sp.Domain. Nothing is re-derived from a payment record, which is the
@@ -272,14 +315,16 @@ const (
 // bad key. rail0#58 (authorize/charge moving to ReceiveWithAuthorization) is
 // exactly that change; this function needs no edit for it. (#27)
 //
-//	created, _ := client.Payments.Create(ctx, req)
-//	sig, _ := rail0.SignSigningPayload(key, created.SigningPayload)
-//	packed := rail0.PackSignature(sig)
-//	client.Payments.Sign(ctx, created.Rail0Id, rail0.PayerSignatureRequest{Signature: packed})
-//
 // For a refund the key is the PAYEE's — the refund payload's `from` is the payee,
 // since a refund moves funds the payee already holds.
 func SignSigningPayload(privateKey []byte, sp *SigningPayload) (Eip3009Signature, error) {
+	return signSigningPayload(privateKey, sp)
+}
+
+// signSigningPayload is the verbatim payload signer shared by the deprecated
+// SignSigningPayload and the checked SignSigningPayloadFor, so neither calls the other
+// and the two produce byte-identical signatures for the same payload.
+func signSigningPayload(privateKey []byte, sp *SigningPayload) (Eip3009Signature, error) {
 	if sp == nil {
 		return Eip3009Signature{}, errors.New("rail0: signing payload is nil (Create answers 502 signing_payload_unavailable when it cannot build one)")
 	}
@@ -311,6 +356,11 @@ func SignSigningPayload(privateKey []byte, sp *SigningPayload) (Eip3009Signature
 		return Eip3009Signature{}, err
 	}
 
+	// ChainId is an int on the wire; a negative one would wrap to a huge uint64.
+	if sp.Domain.ChainId <= 0 {
+		return Eip3009Signature{}, fmt.Errorf("rail0: invalid chainId %d in signing payload: want a positive chain id", sp.Domain.ChainId)
+	}
+
 	domain := TokenDomain{
 		Name:              sp.Domain.Name,
 		Version:           sp.Domain.Version,
@@ -332,30 +382,40 @@ func PackSignature(sig Eip3009Signature) string {
 }
 
 // payloadInt parses a decimal string field of the signing payload, naming the
-// field so a malformed payload is diagnosable rather than a bare parse failure.
+// field so a malformed payload is diagnosable rather than a bare parse failure, and
+// refuses a value outside the uint256 range.
 func payloadInt(field string, raw Uint256String) (*big.Int, error) {
 	n, ok := new(big.Int).SetString(string(raw), 10)
 	if !ok {
 		return nil, fmt.Errorf("rail0: invalid %s %q in signing payload: want a base-unit decimal integer string", field, raw)
+	}
+	// A parseable decimal can still be negative or wider than a uint256 — the latter
+	// used to panic inside encodeUint256 (slice bounds out of range).
+	if err := checkUint256(uintArg{field + " in signing payload", n}); err != nil {
+		return nil, err
 	}
 	return n, nil
 }
 
 // SignTransferWithAuthorization signs a raw EIP-3009 transferWithAuthorization message.
 //
-// Prefer SignSigningPayload: it reads the typehash and every field from the
-// gateway's payload, so it survives a contract change. This stays as the low-level
+// Prefer SignSigningPayloadFor: it checks the gateway's payload against what you asked
+// for, then reads the typehash and every field from it, so it survives a contract
+// change. This stays as the low-level
 // escape hatch for talking to an EIP-3009 token directly, outside a RAIL0 payment.
 func SignTransferWithAuthorization(privateKey []byte, domain TokenDomain, params SignTransferParams) (Eip3009Signature, error) {
 	validAfter := params.ValidAfter
 	if validAfter == nil {
 		validAfter = new(big.Int)
 	}
+	if err := checkUint256(uintArg{"Value", params.Value}, uintArg{"ValidAfter", validAfter}, uintArg{"ValidBefore", params.ValidBefore}); err != nil {
+		return Eip3009Signature{}, err
+	}
 	digest := buildDigest(domain, params.From, params.To, params.Value, validAfter, params.ValidBefore, params.Nonce)
 	return doSign(privateKey, digest)
 }
 
-// Deprecated: use SignSigningPayload with created.SigningPayload. This rebuilds the
+// Deprecated: use SignSigningPayloadFor with created.SigningPayload. This rebuilds the
 // digest from a payment record and hardcodes the Transfer typehash, so rail0#58
 // (authorize/charge moving to ReceiveWithAuthorization) makes it sign a digest the
 // token refuses, with no error here. (#27)
@@ -379,12 +439,16 @@ func SignAuthorize(params SignPaymentParams) (Eip3009Signature, error) {
 	if err != nil {
 		return Eip3009Signature{}, err
 	}
+	validBefore := big.NewInt(params.Payment.AuthorizationExpiry)
+	if err := checkUint256(uintArg{"Payment.AuthorizationExpiry", validBefore}); err != nil {
+		return Eip3009Signature{}, err
+	}
 	digest := buildDigest(params.TokenDomain, params.Payment.Payer, params.ContractAddress,
-		value, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)
+		value, new(big.Int), validBefore, params.Nonce)
 	return doSign(params.PrivateKey, digest)
 }
 
-// Deprecated: use SignSigningPayload with created.SigningPayload — see SignAuthorize. (#27)
+// Deprecated: use SignSigningPayloadFor with created.SigningPayload — see SignAuthorize. (#27)
 //
 // SignCharge signs the EIP-3009 payload required by a Charge call. Identical
 // digest to SignAuthorize (value = Payment.Amount included); the operation is
@@ -405,8 +469,12 @@ func SignCharge(params SignPaymentParams) (Eip3009Signature, error) {
 	if err != nil {
 		return Eip3009Signature{}, err
 	}
+	validBefore := big.NewInt(params.Payment.AuthorizationExpiry)
+	if err := checkUint256(uintArg{"Payment.AuthorizationExpiry", validBefore}); err != nil {
+		return Eip3009Signature{}, err
+	}
 	digest := buildDigest(params.TokenDomain, params.Payment.Payer, params.ContractAddress,
-		value, new(big.Int), big.NewInt(params.Payment.AuthorizationExpiry), params.Nonce)
+		value, new(big.Int), validBefore, params.Nonce)
 	return doSign(params.PrivateKey, digest)
 }
 
@@ -425,9 +493,13 @@ func SignReceiveWithAuthorization(params SignPaymentParams) (Eip3009Signature, e
 	if params.Amount == nil {
 		return Eip3009Signature{}, errors.New("rail0: Amount is required for SignReceiveWithAuthorization (the refunded amount, in token base units)")
 	}
+	validBefore := big.NewInt(params.Payment.RefundExpiry)
+	if err := checkUint256(uintArg{"Amount", params.Amount}, uintArg{"Payment.RefundExpiry", validBefore}); err != nil {
+		return Eip3009Signature{}, err
+	}
 	digest := buildDigestWithTypehash(receiveTypehash,
 		params.TokenDomain, params.Payment.Payee, params.ContractAddress,
-		params.Amount, new(big.Int), big.NewInt(params.Payment.RefundExpiry), params.Nonce)
+		params.Amount, new(big.Int), validBefore, params.Nonce)
 	return doSign(params.PrivateKey, digest)
 }
 
@@ -448,7 +520,14 @@ type SignReceiveParams struct {
 
 // SignReceiveWithAuthorizationRaw signs a ReceiveWithAuthorization message using
 // the raw fields from the API signing payload, avoiding any field mapping errors.
+//
+// Value, ValidAfter and ValidBefore are all required and must lie in the uint256
+// range; anything else is an error rather than a panic or a signature over another
+// number.
 func SignReceiveWithAuthorizationRaw(params SignReceiveParams) (Eip3009Signature, error) {
+	if err := checkUint256(uintArg{"Value", params.Value}, uintArg{"ValidAfter", params.ValidAfter}, uintArg{"ValidBefore", params.ValidBefore}); err != nil {
+		return Eip3009Signature{}, err
+	}
 	digest := buildDigestWithTypehash(receiveTypehash,
 		params.TokenDomain, params.From, params.To,
 		params.Value, params.ValidAfter, params.ValidBefore, params.Nonce)

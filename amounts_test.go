@@ -114,6 +114,10 @@ func TestDescribeErrorCoversTheGatewayCodes(t *testing.T) {
 		"email_domain_not_allowed", "account_email_taken", "account_wallet_taken",
 		"account_name_taken", "terms_required", "onboarding_link_invalid",
 		"onboarding_link_expired", "onboarding_link_superseded",
+		// gateway error catalogue additions aligned on 2026-10-19
+		"webhook_limit_reached", "queue_unavailable", "invalid_signature",
+		"siwe_purpose_mismatch", "transaction_mismatch", "nonce_used",
+		"signing_payload_unavailable", "invalid_sort",
 	} {
 		if DescribeError(code) == "" {
 			t.Errorf("expected a hint for %s", code)
@@ -146,6 +150,17 @@ func TestSiweChainMismatchHintNamesTheAcceptedChains(t *testing.T) {
 	}
 	if strings.Contains(h, "nominal") {
 		t.Errorf("siwe_chain_mismatch hint still carries the pre-#426 wording: %q", h)
+	}
+}
+
+// The catalogue's invalid_signature text now covers a bad recovery byte, the commonest
+// cause from a hand-packed signature (v as 0/1 instead of 27/28): the hint must say so.
+func TestInvalidSignatureHintNamesTheRecoveryByte(t *testing.T) {
+	h := DescribeError("invalid_signature")
+	for _, want := range []string{"recovery byte", "65 bytes", "PackSignature"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("invalid_signature hint should mention %q: %q", want, h)
+		}
 	}
 }
 

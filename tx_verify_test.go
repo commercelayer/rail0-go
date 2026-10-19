@@ -280,7 +280,7 @@ func TestVerifyFailsClosed(t *testing.T) {
 // What the payment record cannot support is skipped — never the value check — and a
 // missing rail0_id is nothing to assert rather than a false alarm.
 func TestVerifySkipsOnlyWhatThePaymentCannotSupport(t *testing.T) {
-	sparse := TxExpectation{Payment: &Payment{}, Operation: "void"}
+	sparse := TxExpectation{Payment: &Payment{Rail0Contract: Address(verifyContract)}, Operation: "void"}
 	if err := VerifyUnsignedTransaction(unsignedFor(t, "void", nil), "", sparse); err != nil {
 		t.Errorf("a sparse payment must not refuse a well-formed transaction: %v", err)
 	}
@@ -320,5 +320,224 @@ func TestSignTransactionForRefusesBeforeSigning(t *testing.T) {
 	}
 	if _, err := SignerAddress([]byte{1, 2, 3}); err == nil {
 		t.Error("a malformed key must be an error")
+	}
+}
+
+// S1-parity: `to` is never optional. An empty one is a contract creation, and a
+// payment with no rail0_contract leaves nothing to compare it with — both refuse,
+// whichever signer runs next (SignTransaction refuses an empty `to` on its own, a KMS
+// or hardware wallet may not).
+func TestVerifyRequiresToAndTheRail0Contract(t *testing.T) {
+	for _, to := range []any{"", nil, "0x", "0x2222", "not-an-address", "2222222222222222222222222222222222222222", "0x" + strings.Repeat("zz", 20)} {
+		overrides := map[string]any{"to": to}
+		err := VerifyUnsignedTransaction(unsignedFor(t, "void", overrides), verifySigner, expectation("void", ""))
+		if err == nil || !strings.Contains(err.Error(), "no valid `to` address") {
+			t.Errorf("to=%v: want a refusal naming `to`, got %v", to, err)
+		}
+	}
+	absent := unsignedFor(t, "void", nil)
+	var m map[string]any
+	_ = json.Unmarshal([]byte(absent), &m)
+	delete(m, "to")
+	b, _ := json.Marshal(m)
+	if err := VerifyUnsignedTransaction(string(b), verifySigner, expectation("void", "")); err == nil ||
+		!strings.Contains(err.Error(), "no valid `to` address") {
+		t.Errorf("an absent `to` must be refused, got %v", err)
+	}
+
+	for _, contract := range []string{"", "0x1234"} {
+		want := expectation("void", "")
+		want.Payment.Rail0Contract = Address(contract)
+		if err := VerifyUnsignedTransaction(unsignedFor(t, "void", nil), verifySigner, want); err == nil ||
+			!strings.Contains(err.Error(), "rail0_contract") {
+			t.Errorf("rail0_contract=%q: want a refusal naming rail0_contract, got %v", contract, err)
+		}
+	}
+}
+
+// ── VerifySigningPayload ─────────────────────────────────────────────────────
+//
+// Ported from the CLI's cmd/tx_verify_test.go: the same payload, signer, token and
+// hostile cases. Unlike the CLI's internal check, an unknown expectation REFUSES
+// rather than skips (the CLI's callers always supply every field anyway).
+
+const (
+	payloadToken    = "0x3333333333333333333333333333333333333333"
+	payloadAttacker = "0x4444444444444444444444444444444444444444"
+)
+
+func signingPayloadFor(overrides func(*SigningPayload)) *SigningPayload {
+	sp := &SigningPayload{
+		PrimaryType: PrimaryTypeReceive,
+		Domain: EIP712Domain{
+			Name:              "USD Coin",
+			Version:           "2",
+			ChainId:           verifyChainID,
+			VerifyingContract: Address(payloadToken),
+		},
+		Message: EIP3009Message{
+			From:        Address(verifySigner),
+			To:          Address(verifyContract),
+			Value:       "1000000",
+			ValidAfter:  "0",
+			ValidBefore: "2000000000",
+			Nonce:       Bytes32("0x" + strings.Repeat("ab", 32)),
+		},
+	}
+	if overrides != nil {
+		overrides(sp)
+	}
+	return sp
+}
+
+func payloadWant() PayloadExpectation {
+	return PayloadExpectation{
+		Signer:  Address(verifySigner),
+		ChainID: verifyChainID,
+		Token:   Address(payloadToken),
+		To:      Address(verifyContract),
+		Value:   "1000000",
+	}
+}
+
+func TestVerifySigningPayloadAcceptsAWellFormedPayload(t *testing.T) {
+	for _, pt := range []string{PrimaryTypeTransfer, PrimaryTypeReceive} {
+		sp := signingPayloadFor(func(sp *SigningPayload) { sp.PrimaryType = pt })
+		if err := VerifySigningPayload(sp, payloadWant()); err != nil {
+			t.Fatalf("%s: rejected a well-formed payload: %v", pt, err)
+		}
+	}
+	// Addresses compare case-insensitively — the gateway may return checksummed ones.
+	upper := signingPayloadFor(func(sp *SigningPayload) {
+		sp.Message.From = Address(strings.ToUpper(verifySigner))
+		sp.Message.To = Address(strings.ToUpper(verifyContract))
+		sp.Domain.VerifyingContract = Address(strings.ToUpper(payloadToken))
+	})
+	if err := VerifySigningPayload(upper, payloadWant()); err != nil {
+		t.Errorf("rejected checksum-cased addresses: %v", err)
+	}
+}
+
+func TestVerifySigningPayloadRejectsHostilePayloads(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*SigningPayload)
+		wantErr string
+	}{
+		// THE case this exists for: a drain of the signer's whole balance, which the
+		// token would honour on its own.
+		{"value inflated far past the amount asked for", func(sp *SigningPayload) { sp.Message.Value = "999999999999" }, "999999999999 base units (message.value)"},
+		{"value one unit off", func(sp *SigningPayload) { sp.Message.Value = "1000001" }, "message.value"},
+		{"value beyond uint256", func(sp *SigningPayload) { sp.Message.Value = new(big.Int).Lsh(big.NewInt(1), 256).String() }, "uint256"},
+		{"value negative", func(sp *SigningPayload) { sp.Message.Value = "-1000000" }, "negative"},
+		{"value not a number", func(sp *SigningPayload) { sp.Message.Value = "0xf4240" }, "invalid value"},
+		{"from is not the signing key", func(sp *SigningPayload) { sp.Message.From = Address(payloadAttacker) }, "(message.from) but the signing key is"},
+		{"domain names another token", func(sp *SigningPayload) { sp.Domain.VerifyingContract = Address(payloadAttacker) }, "token " + payloadAttacker + " (domain.verifyingContract)"},
+		{"domain names another chain", func(sp *SigningPayload) { sp.Domain.ChainId = verifyChainID + 1 }, "(domain.chainId) but this payment is on chain"},
+		{"pays another address", func(sp *SigningPayload) { sp.Message.To = Address(payloadAttacker) }, "pays " + payloadAttacker + " (message.to)"},
+		{"pays no one", func(sp *SigningPayload) { sp.Message.To = "" }, "(message.to)"},
+		{"unknown primaryType", func(sp *SigningPayload) { sp.PrimaryType = "SomeFutureAuthorization" }, "primaryType \"SomeFutureAuthorization\""},
+		{"validBefore beyond uint256", func(sp *SigningPayload) { sp.Message.ValidBefore = new(big.Int).Lsh(big.NewInt(1), 300).String() }, "validBefore"},
+		{"validAfter malformed", func(sp *SigningPayload) { sp.Message.ValidAfter = "" }, "validAfter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := VerifySigningPayload(signingPayloadFor(tc.mutate), payloadWant())
+			if err == nil {
+				t.Fatal("expected a refusal, got nil")
+			}
+			if !strings.HasPrefix(err.Error(), "rail0: refusing to sign: ") {
+				t.Errorf("error should say it is refusing to sign, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error should mention %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// Fail closed: an expectation that cannot back a comparison refuses — never skips.
+func TestVerifySigningPayloadFailsClosed(t *testing.T) {
+	if err := VerifySigningPayload(nil, payloadWant()); err == nil || !strings.Contains(err.Error(), "no signing payload") {
+		t.Errorf("a nil payload must be refused, got %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*PayloadExpectation)
+		wantErr string
+	}{
+		{"no signer", func(w *PayloadExpectation) { w.Signer = "" }, "expected Signer"},
+		{"no token", func(w *PayloadExpectation) { w.Token = "" }, "expected Token"},
+		{"no to", func(w *PayloadExpectation) { w.To = "" }, "expected To"},
+		{"malformed to", func(w *PayloadExpectation) { w.To = "0x2222" }, "expected To"},
+		{"no chain", func(w *PayloadExpectation) { w.ChainID = 0 }, "chain id"},
+		{"no value", func(w *PayloadExpectation) { w.Value = "" }, "without the amount you asked for"},
+		{"human value", func(w *PayloadExpectation) { w.Value = "1.00" }, "not a base-unit"},
+	} {
+		want := payloadWant()
+		tc.mutate(&want)
+		err := VerifySigningPayload(signingPayloadFor(nil), want)
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) || !strings.HasPrefix(err.Error(), "rail0: refusing to sign: ") {
+			t.Errorf("%s: want a refusal mentioning %q, got %v", tc.name, tc.wantErr, err)
+		}
+	}
+}
+
+// PayloadExpectationFor takes chain, token and contract off the payment, and the value
+// either from the payment's stored amount or from a human amount scaled by Decimals.
+func TestPayloadExpectationFor(t *testing.T) {
+	p := verifyPayment()
+	p.Token = Address(payloadToken)
+	p.Amount = "1000000"
+
+	stored, err := PayloadExpectationFor(p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Signer = Address(verifySigner)
+	if stored != payloadWant() {
+		t.Errorf("PayloadExpectationFor(p, \"\") = %+v, want %+v", stored, payloadWant())
+	}
+	if err := VerifySigningPayload(signingPayloadFor(nil), stored); err != nil {
+		t.Errorf("the stored-amount expectation must accept the payment's own payload: %v", err)
+	}
+
+	refund, err := PayloadExpectationFor(p, "0.25")
+	if err != nil || refund.Value != "250000" {
+		t.Errorf("PayloadExpectationFor(p, \"0.25\") = %+v, %v; want Value 250000", refund, err)
+	}
+
+	if _, err := PayloadExpectationFor(nil, ""); err == nil {
+		t.Error("a nil payment must be refused")
+	}
+	if _, err := PayloadExpectationFor(p, "1.0000001"); err == nil || !strings.Contains(err.Error(), `amount "1.0000001"`) {
+		t.Errorf("an amount finer than the token allows must be refused, got %v", err)
+	}
+	noDecimals := *p
+	noDecimals.Decimals = nil
+	if _, err := PayloadExpectationFor(&noDecimals, "1"); err == nil || !strings.Contains(err.Error(), "decimals are unknown") {
+		t.Errorf("a human amount with unknown decimals must be refused, got %v", err)
+	}
+	// A sparse payment yields a sparse expectation, which the verifier then refuses.
+	sparse, err := PayloadExpectationFor(&Payment{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sparse.Signer = Address(verifySigner)
+	if err := VerifySigningPayload(signingPayloadFor(nil), sparse); err == nil {
+		t.Error("an expectation built from a sparse payment must not pass")
+	}
+}
+
+func TestIsHexAddress(t *testing.T) {
+	for _, ok := range []string{verifyContract, strings.ToUpper(verifyContract[:2]) + verifyContract[2:], "0x" + strings.Repeat("aB", 20)} {
+		if !isHexAddress(ok) {
+			t.Errorf("isHexAddress(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{"", "0x", "0x2222", strings.TrimPrefix(verifyContract, "0x"), "0x" + strings.Repeat("g", 40), verifyContract + "00"} {
+		if isHexAddress(bad) {
+			t.Errorf("isHexAddress(%q) = true, want false", bad)
+		}
 	}
 }

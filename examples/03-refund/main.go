@@ -30,7 +30,9 @@ func main() {
 		log.Fatalf("RefundPrepare phase 1: %v", err)
 	}
 	// phase1.SigningPayload contains the EIP-712 typed-data the payee must sign
-	// using eth_signTypedData_v4 or rail0.SignReceiveWithAuthorization.
+	// after checking it: rail0.SignSigningPayloadFor(phase1.SigningPayload, payeeKey, want),
+	// with want from rail0.PayloadExpectationFor(payment, refundAmount). A browser
+	// wallet (eth_signTypedData_v4) should run rail0.VerifySigningPayload first.
 	fmt.Printf("Signing payload nonce: %s\n", phase1.SigningPayload.Message.Nonce)
 
 	// Payee signs the payload → 0x-prefixed 65-byte signature
