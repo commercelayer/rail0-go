@@ -96,10 +96,11 @@ var errorHints = map[string]string{
 	// The SIWE BINDING failures, split out of signer_mismatch so a failed login says
 	// WHICH part of the proof did not bind (rail0-gateway#216). None of these names the
 	// server's expectation: that endpoint is unauthenticated, so echoing the allow-list
-	// or the expected chain id would turn every hint into a probe.
+	// would turn every hint into a probe. siwe_chain_mismatch may point at GET /blockchains:
+	// the accepted chain ids (1 plus every active catalog chain) are public there anyway.
 	"siwe_domain_not_allowed": "sign with the origin the front-end is served from, and have it added to the gateway's SIWE domain allow-list",
 	"siwe_uri_mismatch":       "the message's uri host must equal its own domain",
-	"siwe_chain_mismatch":     "use the chain id the client library sends — this login is off-chain and nominal",
+	"siwe_chain_mismatch":     "sign with chain id 1 (what the SDK's signing helpers send) or the id of a chain the gateway has active (GET /blockchains) — usually a hand-built message or a wallet on an unsupported or deactivated network",
 	"siwe_proof_expired":      "get a fresh nonce and sign again",
 	// Address-wide, not one token: "sign in again", not "that token is dead".
 	"sessions_revoked":             "every session issued before this address's revoke-all cutoff is refused — sign in again",

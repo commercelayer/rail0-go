@@ -134,6 +134,21 @@ func TestNotReleasableHintIsAboutTheBalanceNotTheWindow(t *testing.T) {
 	}
 }
 
+// gateway#426 widened SIWE chain-id acceptance to 1 plus every active catalog chain, so
+// the hint must point there instead of telling the caller to use "the chain id the
+// client library sends" (a wallet on an active network is now accepted too).
+func TestSiweChainMismatchHintNamesTheAcceptedChains(t *testing.T) {
+	h := DescribeError("siwe_chain_mismatch")
+	for _, want := range []string{"chain id 1", "GET /blockchains", "deactivated"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("siwe_chain_mismatch hint should mention %q: %q", want, h)
+		}
+	}
+	if strings.Contains(h, "nominal") {
+		t.Errorf("siwe_chain_mismatch hint still carries the pre-#426 wording: %q", h)
+	}
+}
+
 // A gateway answering an absurd decimals must not hang the caller: FormatAmount used to
 // pad one zero per loop iteration up to decimals, so 100000000 spun for minutes. The
 // bound makes it return the raw value at once.

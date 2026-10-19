@@ -162,9 +162,9 @@ func (s *AuthService) RevokeAll(ctx context.Context, privateKey []byte, domain s
 //
 // privateKey must be 32 raw bytes — use HexToPrivateKey to convert from hex.
 // domain is the host of the API server (e.g. "api.rail0.xyz"). The optional
-// chainID (default 1 when omitted) is the chain id embedded in the SIWE message
-// and must match the gateway's SIWE_CHAIN_ID policy — override only when the
-// gateway is configured with a different login chain.
+// chainID (default 1 when omitted) is the chain id embedded in the SIWE message.
+// The gateway accepts 1 or the id of any chain it has active (GET /blockchains);
+// anything else is refused with 422 siwe_chain_mismatch.
 func (s *AuthService) Login(ctx context.Context, privateKey []byte, domain string, chainID ...int) (*AuthResponse, error) {
 	nonceResp, err := s.GetNonce(ctx)
 	if err != nil {
@@ -204,7 +204,7 @@ type WalletProof struct {
 //
 // privateKey must be the 32-byte key OF the address being added. domain/chainID
 // carry the same meaning and defaults as Login (the gateway host and, default 1,
-// the nominal login chain) and must satisfy the gateway's SIWE policy.
+// or the id of a chain the gateway has active) and must satisfy the gateway's SIWE policy.
 func (s *AuthService) ProveAddress(ctx context.Context, privateKey []byte, domain string, chainID ...int) (*WalletProof, error) {
 	nonceResp, err := s.GetNonce(ctx)
 	if err != nil {
