@@ -720,12 +720,20 @@ local key (a KMS, a hardware wallet, `eth_signTypedData_v4` in a browser wallet)
 *more* dangerous of the two artifacts: the token honours it directly, with no RAIL0
 involvement, for up to `message.value`. An endpoint that answered a refund prepare
 with `{to: <attacker>, value: <your whole balance>}` would otherwise get exactly that
-signed. Before the key touches the payload it checks, in order (the rail0 CLI's rules):
+signed. Before the key touches the payload it checks the typed-data envelope:
+`primaryType` is `ReceiveWithAuthorization` (authorize/charge on v1.4.0+ deployments,
+and every refund) or `TransferWithAuthorization` (authorize/charge on v1.1.0–v1.3.x);
+`types[primaryType]` is **exactly** the EIP-3009 struct — `address from, address to,
+uint256 value, uint256 validAfter, uint256 validBefore, bytes32 nonce`, same names,
+types and order; `types.EIP712Domain`, when present, is exactly `string name, string
+version, uint256 chainId, address verifyingContract`; and `types` defines nothing else.
+`SignSigningPayloadFor` hashes with fixed typehashes and would not care, but a browser
+wallet hashes whatever `types` says — so this is what lets `VerifySigningPayload` guard
+an `eth_signTypedData_v4` call. Then, in order (the rail0 CLI's rules):
 `message.from` is your key's address, `domain.chainId` is the expected chain,
 `domain.verifyingContract` is the expected token, `message.to` is the payment's
 `rail0_contract`, and `message.value` is exactly the expected base-unit amount; it also
-refuses an unknown `primaryType` and any value, `validAfter` or `validBefore` outside the
-uint256 range. The first mismatch returns an error starting with
+refuses any value, `validAfter` or `validBefore` outside the uint256 range. The first mismatch returns an error starting with
 `rail0: refusing to sign:` naming the field (e.g. `(message.value)`), and no signature
 is produced. It fails closed: a nil payload or a `PayloadExpectation` with any field
 empty is refused rather than skipped, and `PayloadExpectationFor` refuses a human amount
@@ -759,10 +767,11 @@ transaction. `SignTransaction` (no expectation) still signs blindly and is
 **deprecated**.
 
 **The gateway builds the payload; you sign it verbatim.** Only the gateway knows
-which contract version a payment lives on, and the version selects the typehash,
-the EIP-712 domain *and* the field layout. `SignSigningPayloadFor` takes all three
-from the payload, so a contract change — rail0#58 moves authorize/charge to
-`ReceiveWithAuthorization` — needs no change here. An unrecognised `primaryType`
+which contract version a payment lives on, and the version selects the typehash
+(`primaryType`) and the domain. `SignSigningPayloadFor` takes both from the payload, so
+a contract change — rail0#58 moves authorize/charge to `ReceiveWithAuthorization` —
+needs no change here. The field layout is EIP-3009's own and the same on every
+version, which is why `VerifySigningPayload` pins it. An unrecognised `primaryType`
 returns an error naming the version skew rather than falling back, because a
 guessed typehash yields a *valid* signature over the wrong digest: it reports
 success and fails only on-chain, after gas, looking like a bad key.

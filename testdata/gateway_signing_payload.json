@@ -1,0 +1,63 @@
+{
+  "types": {
+    "EIP712Domain": [
+      {
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "name": "version",
+        "type": "string"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256"
+      },
+      {
+        "name": "verifyingContract",
+        "type": "address"
+      }
+    ],
+    "ReceiveWithAuthorization": [
+      {
+        "name": "from",
+        "type": "address"
+      },
+      {
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "name": "value",
+        "type": "uint256"
+      },
+      {
+        "name": "validAfter",
+        "type": "uint256"
+      },
+      {
+        "name": "validBefore",
+        "type": "uint256"
+      },
+      {
+        "name": "nonce",
+        "type": "bytes32"
+      }
+    ]
+  },
+  "primaryType": "ReceiveWithAuthorization",
+  "domain": {
+    "name": "USD Coin",
+    "version": "2",
+    "chainId": 84532,
+    "verifyingContract": "0x3333333333333333333333333333333333333333"
+  },
+  "message": {
+    "from": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "to": "0x2222222222222222222222222222222222222222",
+    "value": "1000000",
+    "validAfter": "0",
+    "validBefore": "2000000000",
+    "nonce": "0xabababababababababababababababababababababababababababababababab"
+  }
+}

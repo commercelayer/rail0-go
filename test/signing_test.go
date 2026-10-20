@@ -487,8 +487,20 @@ func TestSignReceiveWithAuthorization_RequiresAmount(t *testing.T) {
 // reported as success, failing only on-chain, after gas.
 
 func testPayload(primaryType string) *rail0.SigningPayload {
+	field := func(name, typ string) map[string]any { return map[string]any{"name": name, "type": typ} }
 	return &rail0.SigningPayload{
 		PrimaryType: primaryType,
+		// The gateway's types, as Rail0::Eip3009#typed_data emits them.
+		Types: map[string]any{
+			"EIP712Domain": []any{
+				field("name", "string"), field("version", "string"),
+				field("chainId", "uint256"), field("verifyingContract", "address"),
+			},
+			primaryType: []any{
+				field("from", "address"), field("to", "address"), field("value", "uint256"),
+				field("validAfter", "uint256"), field("validBefore", "uint256"), field("nonce", "bytes32"),
+			},
+		},
 		Domain: rail0.EIP712Domain{
 			Name:              "USD Coin",
 			Version:           "2",
