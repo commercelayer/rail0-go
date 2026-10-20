@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 	"testing"
 )
@@ -366,9 +367,26 @@ const (
 	payloadAttacker = "0x4444444444444444444444444444444444444444"
 )
 
+// gatewayTypes is `types` as the gateway emits it (Rail0::Eip3009#typed_data) and as
+// encoding/json decodes it into SigningPayload.Types.
+func gatewayTypes(primaryType string) map[string]any {
+	field := func(name, typ string) any { return map[string]any{"name": name, "type": typ} }
+	return map[string]any{
+		"EIP712Domain": []any{
+			field("name", "string"), field("version", "string"),
+			field("chainId", "uint256"), field("verifyingContract", "address"),
+		},
+		primaryType: []any{
+			field("from", "address"), field("to", "address"), field("value", "uint256"),
+			field("validAfter", "uint256"), field("validBefore", "uint256"), field("nonce", "bytes32"),
+		},
+	}
+}
+
 func signingPayloadFor(overrides func(*SigningPayload)) *SigningPayload {
 	sp := &SigningPayload{
 		PrimaryType: PrimaryTypeReceive,
+		Types:       gatewayTypes(PrimaryTypeReceive),
 		Domain: EIP712Domain{
 			Name:              "USD Coin",
 			Version:           "2",
@@ -402,7 +420,7 @@ func payloadWant() PayloadExpectation {
 
 func TestVerifySigningPayloadAcceptsAWellFormedPayload(t *testing.T) {
 	for _, pt := range []string{PrimaryTypeTransfer, PrimaryTypeReceive} {
-		sp := signingPayloadFor(func(sp *SigningPayload) { sp.PrimaryType = pt })
+		sp := signingPayloadFor(func(sp *SigningPayload) { sp.PrimaryType = pt; sp.Types = gatewayTypes(pt) })
 		if err := VerifySigningPayload(sp, payloadWant()); err != nil {
 			t.Fatalf("%s: rejected a well-formed payload: %v", pt, err)
 		}
@@ -451,6 +469,111 @@ func TestVerifySigningPayloadRejectsHostilePayloads(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("error should mention %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// The payload exactly as the gateway serialises it — produced by running gateway main's
+// Rail0::Eip3009#typed_data — decodes and passes, and signs.
+func TestVerifySigningPayloadAcceptsTheGatewaysPayload(t *testing.T) {
+	raw, err := os.ReadFile("testdata/gateway_signing_payload.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sp SigningPayload
+	if err := json.Unmarshal(raw, &sp); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifySigningPayload(&sp, payloadWant()); err != nil {
+		t.Fatalf("rejected the gateway's own payload: %v", err)
+	}
+	key, _ := HexToPrivateKey(verifyKeyHex)
+	if _, err := SignSigningPayloadFor(&sp, key, payloadWant()); err != nil {
+		t.Fatalf("the checked signer refused the gateway's own payload: %v", err)
+	}
+	// No EIP712Domain is fine: a wallet derives it from the domain.
+	delete(sp.Types.(map[string]any), "EIP712Domain")
+	if err := VerifySigningPayload(&sp, payloadWant()); err != nil {
+		t.Errorf("rejected a payload without EIP712Domain: %v", err)
+	}
+	// A caller-built Types of another Go shape is judged by its JSON, like a wallet would.
+	typed := signingPayloadFor(func(sp *SigningPayload) {
+		sp.Types = map[string][]map[string]string{
+			PrimaryTypeReceive: {
+				{"name": "from", "type": "address"}, {"name": "to", "type": "address"},
+				{"name": "value", "type": "uint256"}, {"name": "validAfter", "type": "uint256"},
+				{"name": "validBefore", "type": "uint256"}, {"name": "nonce", "type": "bytes32"},
+			},
+		}
+	})
+	if err := VerifySigningPayload(typed, payloadWant()); err != nil {
+		t.Errorf("rejected a typed Types value: %v", err)
+	}
+}
+
+// The typed-data envelope. SignSigningPayloadFor hashes with fixed typehashes, but a
+// browser wallet hashes whatever `types` says: each tampering is refused before either.
+func TestVerifySigningPayloadRejectsTamperedTypedData(t *testing.T) {
+	fields := func(sp *SigningPayload, name string) []any { return sp.Types.(map[string]any)[name].([]any) }
+	setFields := func(sp *SigningPayload, name string, f []any) { sp.Types.(map[string]any)[name] = f }
+	cases := []struct {
+		name    string
+		mutate  func(*SigningPayload)
+		wantErr string
+	}{
+		{"unknown primaryType", func(sp *SigningPayload) {
+			sp.Types = gatewayTypes("Permit")
+			sp.PrimaryType = "Permit"
+		}, `primaryType "Permit" is not an EIP-3009 authorization type`},
+		{"primaryType with no definition", func(sp *SigningPayload) { sp.PrimaryType = PrimaryTypeTransfer },
+			`types define "ReceiveWithAuthorization", which an EIP-3009 authorization does not use`},
+		{"reordered fields", func(sp *SigningPayload) {
+			f := fields(sp, PrimaryTypeReceive)
+			f[0], f[1] = f[1], f[0]
+		}, "types.ReceiveWithAuthorization is (address to,address from,"},
+		{"renamed field", func(sp *SigningPayload) {
+			fields(sp, PrimaryTypeReceive)[1] = map[string]any{"name": "recipient", "type": "address"}
+		}, "address recipient"},
+		{"changed field type", func(sp *SigningPayload) {
+			fields(sp, PrimaryTypeReceive)[2] = map[string]any{"name": "value", "type": "uint128"}
+		}, "uint128 value"},
+		{"extra field", func(sp *SigningPayload) {
+			setFields(sp, PrimaryTypeReceive, append(fields(sp, PrimaryTypeReceive), map[string]any{"name": "spender", "type": "address"}))
+		}, "address spender) but must be exactly (address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"},
+		{"missing field", func(sp *SigningPayload) {
+			setFields(sp, PrimaryTypeReceive, fields(sp, PrimaryTypeReceive)[:5])
+		}, "types.ReceiveWithAuthorization is ("},
+		{"extra key on a field", func(sp *SigningPayload) {
+			fields(sp, PrimaryTypeReceive)[0] = map[string]any{"name": "from", "type": "address", "note": "x"}
+		}, "types.ReceiveWithAuthorization is ("},
+		{"extra type", func(sp *SigningPayload) {
+			sp.Types.(map[string]any)["Transfer"] = []any{map[string]any{"name": "to", "type": "address"}}
+		}, `types define "Transfer"`},
+		{"wrong EIP712Domain", func(sp *SigningPayload) {
+			setFields(sp, "EIP712Domain", append(fields(sp, "EIP712Domain"), map[string]any{"name": "salt", "type": "bytes32"}))
+		}, "types.EIP712Domain is (string name,string version,uint256 chainId,address verifyingContract,bytes32 salt) but must be exactly (string name,string version,uint256 chainId,address verifyingContract)"},
+		{"EIP712Domain without version", func(sp *SigningPayload) {
+			f := fields(sp, "EIP712Domain")
+			setFields(sp, "EIP712Domain", []any{f[0], f[2], f[3]})
+		}, "types.EIP712Domain is (string name,uint256 chainId,address verifyingContract)"},
+		{"no types", func(sp *SigningPayload) { sp.Types = nil }, "the signing payload has no types"},
+		{"types not an object", func(sp *SigningPayload) { sp.Types = []any{} }, "the signing payload has no types"},
+		{"empty types", func(sp *SigningPayload) { sp.Types = map[string]any{} }, "types.ReceiveWithAuthorization is (null)"},
+		{"fields not a list", func(sp *SigningPayload) { sp.Types.(map[string]any)[PrimaryTypeReceive] = "address from" }, `types.ReceiveWithAuthorization is ("address from")`},
+	}
+	key, _ := HexToPrivateKey(verifyKeyHex)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := VerifySigningPayload(signingPayloadFor(tc.mutate), payloadWant())
+			if err == nil {
+				t.Fatal("expected a refusal, got nil")
+			}
+			if !strings.HasPrefix(err.Error(), "rail0: refusing to sign: ") || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("want a refusal mentioning %q, got: %v", tc.wantErr, err)
+			}
+			if sig, err := SignSigningPayloadFor(signingPayloadFor(tc.mutate), key, payloadWant()); err == nil || sig != (Eip3009Signature{}) {
+				t.Errorf("the checked signer must produce nothing, got %v / %+v", err, sig)
 			}
 		})
 	}

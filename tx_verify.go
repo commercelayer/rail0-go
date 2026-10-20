@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -441,8 +442,15 @@ func PayloadExpectationFor(p *Payment, amount string) (PayloadExpectation, error
 //  4. message.to is want.To, the payment's RAIL0 contract;
 //  5. message.value is exactly want.Value, in base units.
 //
-// It also refuses a payload SignSigningPayloadFor could not sign faithfully: an unknown
-// primaryType, or a value/validAfter/validBefore that is not a uint256. validAfter and
+// Before those, the typed-data envelope (checkTypedData): primaryType is one of the two
+// EIP-3009 authorization types, types[primaryType] is EXACTLY the EIP-3009 field list,
+// types.EIP712Domain (when present) is exactly the token domain's field list, and types
+// defines nothing else. SignSigningPayloadFor rebuilds the digest from fixed typehashes
+// and would not notice, but a browser wallet hashes whatever types says — so a caller
+// that verifies here and then hands the payload to eth_signTypedData_v4 needs it.
+//
+// It also refuses a payload SignSigningPayloadFor could not sign faithfully: a value,
+// validAfter or validBefore that is not a uint256. validAfter and
 // validBefore are not compared (the CLI does not either): the gateway derives them from
 // the payment's expiries, which a caller does not hold independently.
 //
@@ -464,9 +472,8 @@ func VerifySigningPayload(sp *SigningPayload, want PayloadExpectation) error {
 		return err
 	}
 
-	if sp.PrimaryType != PrimaryTypeTransfer && sp.PrimaryType != PrimaryTypeReceive {
-		return refuse("the authorization's primaryType %q is not one this SDK knows (%s or %s): it is older than the gateway it is talking to",
-			sp.PrimaryType, PrimaryTypeTransfer, PrimaryTypeReceive)
+	if err := checkTypedData(sp); err != nil {
+		return err
 	}
 
 	if !strings.EqualFold(string(sp.Message.From), string(want.Signer)) {
@@ -499,6 +506,87 @@ func VerifySigningPayload(sp *SigningPayload, want PayloadExpectation) error {
 		if _, err := payloadInt(f.name, f.raw); err != nil {
 			return refuse("%s", strings.TrimPrefix(err.Error(), "rail0: "))
 		}
+	}
+	return nil
+}
+
+// eip3009Fields is the EIP-3009 struct shared by TransferWithAuthorization and
+// ReceiveWithAuthorization: names, types AND order are part of the typehash.
+var eip3009Fields = [][2]string{
+	{"from", "address"}, {"to", "address"}, {"value", "uint256"},
+	{"validAfter", "uint256"}, {"validBefore", "uint256"}, {"nonce", "bytes32"},
+}
+
+// eip712DomainFields is the token's EIP-712 domain, as the gateway declares it and the
+// token hashes it.
+var eip712DomainFields = [][2]string{
+	{"name", "string"}, {"version", "string"}, {"chainId", "uint256"}, {"verifyingContract", "address"},
+}
+
+// checkTypedData refuses a typed-data envelope that is not exactly the gateway's
+// EIP-3009 shape. The gateway emits ReceiveWithAuthorization for authorize/charge on
+// 1.4.0+ deployments and for every refund, TransferWithAuthorization for authorize/
+// charge on 1.1.0–1.3.x; no payment response carries the version, so both are accepted
+// and nothing else is.
+//
+// sp.Types is `any` (decoded JSON, or whatever a caller built), so it is normalised
+// through JSON first: the comparison is on what a wallet would receive.
+func checkTypedData(sp *SigningPayload) error {
+	if sp.PrimaryType != PrimaryTypeTransfer && sp.PrimaryType != PrimaryTypeReceive {
+		return refuse("the authorization's primaryType %q is not an EIP-3009 authorization type (%s or %s)",
+			sp.PrimaryType, PrimaryTypeTransfer, PrimaryTypeReceive)
+	}
+	var types map[string]json.RawMessage
+	raw, err := json.Marshal(sp.Types)
+	if err != nil || json.Unmarshal(raw, &types) != nil || types == nil {
+		return refuse("the signing payload has no types")
+	}
+	names := make([]string, 0, len(types))
+	for name := range types {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if name != sp.PrimaryType && name != "EIP712Domain" {
+			return refuse("the signing payload's types define %q, which an EIP-3009 authorization does not use", name)
+		}
+	}
+	if err := checkTypeFields("types."+sp.PrimaryType, types[sp.PrimaryType], eip3009Fields); err != nil {
+		return err
+	}
+	if domain, ok := types["EIP712Domain"]; ok {
+		return checkTypeFields("types.EIP712Domain", domain, eip712DomainFields)
+	}
+	return nil
+}
+
+// checkTypeFields refuses a type definition that differs from want in any name, type
+// or position, or whose entries carry anything besides name and type.
+func checkTypeFields(label string, raw json.RawMessage, want [][2]string) error {
+	expected := make([]string, len(want))
+	for i, f := range want {
+		expected[i] = f[1] + " " + f[0]
+	}
+	var fields []map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		got := strings.TrimSpace(string(raw))
+		if got == "" {
+			got = "null"
+		}
+		return refuse("%s is (%s) but must be exactly (%s)", label, got, strings.Join(expected, ","))
+	}
+	actual := make([]string, len(fields))
+	exact := len(fields) == len(want)
+	for i, f := range fields {
+		name, _ := f["name"].(string)
+		typ, _ := f["type"].(string)
+		actual[i] = fmt.Sprintf("%v %v", f["type"], f["name"])
+		if i >= len(want) || len(f) != 2 || name != want[i][0] || typ != want[i][1] {
+			exact = false
+		}
+	}
+	if !exact {
+		return refuse("%s is (%s) but must be exactly (%s)", label, strings.Join(actual, ","), strings.Join(expected, ","))
 	}
 	return nil
 }
