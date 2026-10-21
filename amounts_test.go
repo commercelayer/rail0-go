@@ -104,7 +104,7 @@ func TestDescribeError(t *testing.T) {
 // carry a local hint, including the ones the other SDKs already describe.
 func TestDescribeErrorCoversTheGatewayCodes(t *testing.T) {
 	for _, code := range []string{
-		"account_deactivated", "wallet_deactivated", "not_your_account",
+		"account_deactivated", "wallet_deactivated", "wallet_deactivated_by_operator", "not_your_account",
 		"release_submitter_not_a_party", "validation_failed", "rate_limited",
 		"event_not_found", "submission_timeout", "token_not_accepted",
 		"payer_must_be_caller", "not_redrivable", "last_active_wallet", "last_admin",
@@ -122,6 +122,18 @@ func TestDescribeErrorCoversTheGatewayCodes(t *testing.T) {
 		if DescribeError(code) == "" {
 			t.Errorf("expected a hint for %s", code)
 		}
+	}
+}
+
+// gateway#439: the owner's own session switches its wallet back on, so the
+// wallet_deactivated hint must name that path; only an operator's switch-off
+// (wallet_deactivated_by_operator) sends the caller to an operator.
+func TestWalletReactivationHints(t *testing.T) {
+	if h := DescribeError("wallet_deactivated"); !strings.Contains(h, "switch it back on") {
+		t.Errorf("wallet_deactivated hint does not name self-reactivation: %q", h)
+	}
+	if h := DescribeError("wallet_deactivated_by_operator"); !strings.Contains(h, "ask an operator to reactivate it") {
+		t.Errorf("wallet_deactivated_by_operator hint does not send the caller to an operator: %q", h)
 	}
 }
 

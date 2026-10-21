@@ -141,6 +141,11 @@ type UpdateWalletRequest struct {
 // only active wallet is refused with 422 last_active_wallet: login resolves the
 // account from a wallet, so an account with none could neither act nor add one
 // back.
+//
+// Active=true is the one write a deactivated wallet's own session may make: it
+// switches the wallet back on when its owner switched it off. A wallet an operator
+// switched off (Wallet.DeactivatedBy "operator", or empty on an older switch-off) is
+// refused 403 wallet_deactivated_by_operator: only an operator lifts it.
 func (s *WalletsService) Update(ctx context.Context, accountID, id string, req UpdateWalletRequest) (*Wallet, error) {
 	var out Wallet
 	if err := s.http.patch(ctx, pathf("/accounts/%s/wallets/%s", accountID, id), req, &out); err != nil {
