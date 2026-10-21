@@ -142,14 +142,18 @@ var errorHints = map[string]string{
 	"wallet_add_unavailable": "adding a wallet to an account is not available yet — it returns with the merchant wallet-management section",
 	// Deactivation blocks money-in and account writes only; reads and the operations that
 	// return funds keep working, so a wind-down is never trapped.
-	"account_deactivated":           "the merchant account is deactivated — void, release and refund still work, but new payments, authorize, charge, capture and account changes are blocked until an operator reactivates it",
-	"wallet_deactivated":            "this wallet is deactivated — it can still read, but cannot act on payments or change the account; reactivate it or sign in with another of the account's wallets",
-	"release_submitter_not_a_party": "from must be the payment's payer or payee — omit it to build the release for the signed-in caller",
-	"payer_must_be_caller":          "the payer must be the signed-in wallet — the buyer creates and authorizes its own payment",
+	"account_deactivated": "the merchant account is deactivated — void, release and refund still work, but new payments, authorize, charge, capture and account changes are blocked until an operator reactivates it",
+	"wallet_deactivated":  "this wallet is deactivated — it can still read, but cannot act on payments or change the account; if you switched it off, its own session can switch it back on (Wallets.Update with Active=true), or sign in with another of the account's wallets",
+	// gateway#439: an operator's switch-off revokes the key, so the key's own session
+	// cannot lift it (the owner's own switch-off it can).
+	"wallet_deactivated_by_operator": "an operator deactivated this wallet, so only an operator can reactivate it — ask an operator to reactivate it",
+	"release_submitter_not_a_party":  "from must be the payment's payer or payee — omit it to build the release for the signed-in caller",
+	"payer_must_be_caller":           "the payer must be the signed-in wallet — the buyer creates and authorizes its own payment",
 	// Login resolves the account FROM a wallet, so an account left with no active one
 	// could neither act nor add a wallet back. Adding a wallet is suspended and a session
-	// changes only its own wallet, so the other wallet has to be reactivated by an operator.
-	"last_active_wallet": "this is the account's only active wallet — another wallet must be active before this one can be switched off (adding a wallet is not available yet; an operator can reactivate one)",
+	// changes only its own wallet, so the other wallet comes back on from its own session
+	// (if its owner switched it off) or from an operator (gateway#439).
+	"last_active_wallet": "this is the account's only active wallet — another wallet must be active before this one can be switched off: sign in with one you switched off and reactivate it, or ask an operator (adding a wallet is not available yet)",
 	"last_admin":         "the change would leave no active operator — grant the operator role to another active account first",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
 	"not_payee":                   "only the merchant (payee) may do this",

@@ -197,6 +197,18 @@ wallets is public and lives on `client.PaymentMethods`, below.)
 the session's own wallet: another wallet of the same account is refused 403
 `not_your_wallet`. An operator session is exempt.
 
+**Switching a wallet back on.** Every switch-off records who did it in
+`Wallet.DeactivatedBy`: `"owner"` (a session signed in with that wallet) or
+`"operator"` (an operator session); empty while active, and on a switch-off older
+than the record. A deactivated wallet's session is read-only (403
+`wallet_deactivated`) except for one write: `Update` with `Active: &true` on its
+**own** wallet, which switches it back on when its owner switched it off. A wallet
+an operator switched off (or with no `DeactivatedBy`) is refused 403
+`wallet_deactivated_by_operator`: an operator's switch-off revokes the key, so only
+an operator lifts it. The flip side: a wallet its owner switched off can be switched
+back on by whoever holds its key, so a definitive revocation (a leaked key) must
+come from an operator.
+
 **Adding a wallet is currently unavailable.** The gateway answers every
 `Wallets.Create` with 403 `wallet_add_unavailable`; it returns with the merchant
 wallet-management section, which keeps the request shape and the proof below.
@@ -254,6 +266,11 @@ client.Wallets.Update(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Label: "Ma
 // The account's only active wallet is refused with 422 last_active_wallet (login
 // resolves the account from a wallet): another wallet must be active first.
 client.Wallets.Delete(ctx, accountID, w.ID)
+
+// Switch it back on — from its own session, when its owner switched it off
+// (w.DeactivatedBy == "owner"); 403 wallet_deactivated_by_operator otherwise.
+on := true
+client.Wallets.Update(ctx, accountID, w.ID, rail0.UpdateWalletRequest{Active: &on})
 
 // What the wallet ACCEPTS — this is what drives the public /payment_methods and
 // gates payment creation: a wallet with no active holding is invisible to buyers
