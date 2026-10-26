@@ -1,0 +1,408 @@
+#!/usr/bin/env bash
+# bin/release-prepare — open the release pull request for the rail0-go module.
+#
+# Releasing is three steps, and this is the first:
+#   1. bin/release-prepare           opens the release pull request (this script);
+#   2. review, approve and merge it  (the release notes are in its body: edit them there);
+#   3. .github/workflows/release.yml, on the push to main, runs CI on the merge commit,
+#      publishes, creates the tag vX.Y.Z and the GitHub release, and posts to Slack.
+#
+# Nothing here publishes, tags or touches a registry: the only thing that can release is
+# an approved, merged pull request.
+#
+#   bin/release-prepare                   # version computed from the merged PR titles
+#   bin/release-prepare minor             # by hand: patch, minor, major or an explicit X.Y.Z
+#   bin/release-prepare 1.10.0 --dry-run  # print what it would do, write nothing
+#
+# A Go module is published by its tag alone: the workflow has nothing to upload, it
+# creates the tag vX.Y.Z on the merge commit and the GitHub release. version.go holds
+# the number so the code knows its own version and the tag is decided in review.
+set -euo pipefail
+
+PACKAGE_LABEL="github.com/commercelayer/rail0-go"
+REPO_SLUG="commercelayer/rail0-go"
+VERSION_SOURCE="version.go"
+VERSION_FILES="version.go"
+PUBLISH_SENTENCE="creates the tag (which is what publishes a Go module) and the GitHub release"
+
+read_version() { sed -n 's/^const Version = "\([^"]*\)".*$/\1/p' version.go | head -n 1; }
+
+write_version() { # OLD NEW
+  replace_in_file version.go "const Version = \"$1\"" "const Version = \"$2\""
+}
+
+preflight_checks() { :; } # nothing beyond the shared checks
+
+# ---------------------------------------------------------------------------
+# Everything below is shared, byte for byte, by rail0-ts, rail0-ruby, rail0-go and
+# rail0-cli. Only the block above differs between the four repos.
+# ---------------------------------------------------------------------------
+
+# Written for the bash 3.2 macOS ships as /bin/bash as well as for Linux: no associative
+# arrays, no ${var,,}, no mapfile, and no "${array[@]}" that set -u trips on when empty.
+
+if [ -t 2 ]; then red=$'\033[31m' yellow=$'\033[33m' reset=$'\033[0m'; else red="" yellow="" reset=""; fi
+die()  { printf '%serror:%s %s\n' "$red" "$reset" "$*" >&2; exit 1; }
+warn() { printf '%swarning:%s %s\n' "$yellow" "$reset" "$*" >&2; }
+info() { printf '==> %s\n' "$*"; }
+
+usage() {
+  cat <<EOF
+Usage: bin/release-prepare [X.Y.Z|patch|minor|major] [--dry-run]
+
+Opens the release pull request for ${PACKAGE_LABEL}: bumps the version, writes the
+release notes from the pull requests merged since the last tag, and pushes
+chore/release-X.Y.Z with a pull request titled "chore(release): vX.Y.Z".
+Merging that pull request is what releases: .github/workflows/release.yml
+publishes, tags and announces it.
+
+  (no argument)    the version is computed from the pull requests merged since the
+                   latest v* tag (Conventional Commits): a breaking change ("!" after
+                   the type, or "BREAKING CHANGE:" in the commit body) -> major, any
+                   feat -> minor, anything else -> patch. Refuses when nothing merged.
+  X.Y.Z            the version to release by hand (must be greater than the latest tag)
+  patch|minor|major bump the latest tag by hand, overriding the computed bump
+  --dry-run        print the version, the files, the notes and the pull request,
+                   and change nothing (no commit, no branch, no push)
+
+Preconditions: on main, up to date with origin/main, clean tree, gh signed in.
+EOF
+}
+
+semver_valid() {
+  printf '%s' "$1" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+}
+
+# semver_gt A B — true when A > B (both X.Y.Z).
+semver_gt() {
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<<"$1"
+  IFS=. read -r b1 b2 b3 <<<"$2"
+  [ "$a1" -gt "$b1" ] && return 0; [ "$a1" -lt "$b1" ] && return 1
+  [ "$a2" -gt "$b2" ] && return 0; [ "$a2" -lt "$b2" ] && return 1
+  [ "$a3" -gt "$b3" ]
+}
+
+semver_bump() { # semver_bump X.Y.Z patch|minor|major
+  local x y z
+  IFS=. read -r x y z <<<"$1"
+  case "$2" in
+    major) echo "$((x + 1)).0.0" ;;
+    minor) echo "${x}.$((y + 1)).0" ;;
+    patch) echo "${x}.${y}.$((z + 1))" ;;
+  esac
+}
+
+# replace_in_file FILE FROM TO [all] — literal (not regex) replacement of the first, or
+# every, occurrence; fails when FROM is not there. awk + mv rather than `sed -i`, whose
+# flags differ between BSD and GNU sed.
+replace_in_file() {
+  local file="$1" from="$2" to="$3" every="${4:-}"
+  grep -qF -- "$from" "$file" || die "$file: '$from' not found"
+  awk -v from="$from" -v to="$to" -v every="$every" '
+    { line = $0; out = "" }
+    (every != "" || !done) {
+      while ((i = index(line, from)) > 0) {
+        out = out substr(line, 1, i - 1) to
+        line = substr(line, i + length(from))
+        done = 1
+        if (every == "") break
+      }
+    }
+    { print out line }
+  ' "$file" >"$file.release-prepare.tmp"
+  cat "$file.release-prepare.tmp" >"$file" # keeps the file's mode, unlike mv
+  rm -f "$file.release-prepare.tmp"
+}
+
+# --- arguments --------------------------------------------------------------------------
+
+target=""
+dry_run=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) dry_run=1 ;;
+    -h | --help) usage; exit 0 ;;
+    -*) usage >&2; die "unknown option: $arg" ;;
+    *)
+      [ -z "$target" ] || die "one version at most (got '$target' and '$arg')"
+      target="$arg"
+      ;;
+  esac
+done
+
+cd "$(dirname "$0")/.."
+cd "$(git rev-parse --show-toplevel)"
+
+# RELEASE_PREPARE_SKIP_GIT_CHECKS=1 exists for testing the script from a feature branch
+# or a worktree. It skips ONLY the branch / up-to-date / clean-tree checks, and only
+# together with --dry-run, which writes nothing; a real run always enforces them.
+skip_git_checks=0
+if [ "${RELEASE_PREPARE_SKIP_GIT_CHECKS:-}" = "1" ]; then
+  [ "$dry_run" = 1 ] || die "RELEASE_PREPARE_SKIP_GIT_CHECKS is honoured only with --dry-run"
+  skip_git_checks=1
+  warn "RELEASE_PREPARE_SKIP_GIT_CHECKS=1: not checking branch, sync and clean tree (dry run only)"
+fi
+
+# --- 1. preconditions -------------------------------------------------------------------
+
+command -v git >/dev/null 2>&1 || die "git not found"
+gh_ok=0
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  gh_ok=1
+elif [ "$dry_run" = 1 ]; then
+  warn "gh is missing or not signed in: notes come from git, and a real run will refuse"
+else
+  die "gh is missing or not signed in (gh auth login): it opens the pull request"
+fi
+
+info "fetching origin (main and tags)"
+git fetch --quiet --tags origin main || die "git fetch origin failed"
+
+if [ "$skip_git_checks" = 0 ]; then
+  branch="$(git symbolic-ref --quiet --short HEAD || true)"
+  [ "$branch" = "main" ] || die "run this on main (current: ${branch:-detached HEAD})"
+  [ -z "$(git status --porcelain)" ] || die "the working tree is not clean; commit or stash first"
+  [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
+    die "main is not in sync with origin/main (git pull --ff-only, or push your commits through a PR)"
+fi
+
+last_tag="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+current_version="$(read_version)"
+semver_valid "$current_version" || die "$VERSION_SOURCE holds '$current_version', not X.Y.Z"
+if [ -n "$last_tag" ]; then
+  last_version="${last_tag#v}"
+  if [ "$current_version" != "$last_version" ]; then
+    warn "$VERSION_SOURCE says $current_version but the latest tag is $last_tag"
+  fi
+  # A version file AHEAD of the tag is a version that never got released: bump from it,
+  # so the next release can never go below what main already declares.
+  if semver_gt "$current_version" "$last_version"; then
+    warn "bumping from $current_version, not from $last_tag (was $current_version ever released?)"
+    last_version="$current_version"
+  fi
+else
+  # No release tag yet: bump from what the version file says.
+  last_version="$current_version"
+  warn "no vX.Y.Z tag yet: bumping from $VERSION_SOURCE ($current_version); the notes cover the whole history"
+fi
+
+# --- 2. what merged since the last tag: release notes and the computed bump --------------
+
+# Lines "NUMBER<US>TITLE<US>BREAKING" (US = \037, the unit separator: unlike a tab it is
+# not IFS whitespace, so an empty NUMBER survives `read`; BREAKING is "!" or empty) of what landed on main since the last
+# tag. The git range, not `gh pr list --search merged:>DATE`: the tag sits on the merge
+# commit of the previous release PR, whose commit time and GitHub's mergedAt differ by a
+# second or so, so a date search drags that release PR back into the next notes. The
+# range is exact, needs no network, and is the same thing the tag will cover.
+#
+# First-parent history of main: a merge commit carries the PR title as its first body
+# line, a squash merge carries it as the subject ending in "(#N)", and a rebase-merged
+# commit is listed by its subject.
+list_merged_prs() {
+  local range="origin/main"
+  [ -n "$last_tag" ] && range="$last_tag..origin/main"
+  git log --first-parent --format='%s%x1f%b%x1e' "$range" | awk -v RS='\036' -v FS='\037' '
+    {
+      sub(/^\n+/, "", $1); subject = $1; body = $2
+      sub(/^\n+/, "", body); split(body, lines, "\n"); first = lines[1]
+      # A "BREAKING CHANGE:" footer anywhere in the body marks the change as breaking
+      # even when the title has no "!" (a squash merge carries the PR description there).
+      brk = (body ~ /(^|\n)BREAKING[ -]CHANGE:/) ? "!" : ""
+      if (match(subject, /^Merge pull request #[0-9]+/)) {
+        n = substr(subject, 21, RLENGTH - 20)
+        print n "\037" (first != "" ? first : subject) "\037" brk
+      } else if (match(subject, /\(#[0-9]+\)$/)) {
+        n = substr(subject, RSTART + 2, RLENGTH - 3)
+        print n "\037" substr(subject, 1, RSTART - 2) "\037" brk
+      } else if (subject != "" && subject !~ /^Merge /) {
+        print "\037" subject "\037" brk
+      }
+    }'
+}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+bump_rank() { case "$1" in major) echo 3 ;; minor) echo 2 ;; patch) echo 1 ;; *) echo 0 ;; esac; }
+
+added="" changed="" fixed="" removed=""
+# The computed bump (Conventional Commits, as the semver rule reads them) and the pull
+# requests that decided it: only those at the highest level, so the release PR can say
+# exactly why it is a major, a minor or a patch.
+bump="" bump_why=""
+cc_re='^([A-Za-z]+)(\(([^)]*)\))?(!)?:[[:space:]]*(.*)$'
+prs="$(list_merged_prs | sort -n)"
+while IFS=$'\037' read -r number title body_breaking; do
+  [ -n "$title" ] || continue
+  case "$title" in "chore(release):"*) continue ;; esac
+  type="" scope="" breaking="" subject="$title"
+  if [[ "$title" =~ $cc_re ]]; then
+    type="$(lower "${BASH_REMATCH[1]}")"
+    scope="${BASH_REMATCH[3]}"
+    breaking="${BASH_REMATCH[4]}"
+    subject="${BASH_REMATCH[5]}"
+  fi
+  entry="- "
+  [ -n "$scope" ] && entry="${entry}**${scope}:** "
+  entry="${entry}${subject}"
+  [ -n "$body_breaking" ] && breaking="!"
+  [ -n "$breaking" ] && entry="${entry} **(breaking)**"
+  [ -n "$number" ] && entry="${entry} (#${number})"
+  case "$(lower "$subject")" in remove* | drop* | delete*) removing=1 ;; *) removing=0 ;; esac
+  if [ "$type" = "revert" ] || [ "$removing" = 1 ]; then
+    removed="${removed}${entry}"$'\n'
+  elif [ "$type" = "feat" ]; then
+    added="${added}${entry}"$'\n'
+  elif [ "$type" = "fix" ]; then
+    fixed="${fixed}${entry}"$'\n'
+  else # chore, docs, refactor, perf, ci, build, test, style, or no prefix
+    changed="${changed}${entry}"$'\n'
+  fi
+  if [ -n "$breaking" ]; then level=major; elif [ "$type" = "feat" ]; then level=minor; else level=patch; fi
+  if [ "$(bump_rank "$level")" -gt "$(bump_rank "$bump")" ]; then bump="$level" bump_why=""; fi
+  if [ "$level" = "$bump" ]; then bump_why="${bump_why}- ${title}${number:+ (#${number})}"$'\n'; fi
+done <<<"$prs"
+
+notes=""
+[ -n "$added" ] && notes="${notes}### Added"$'\n\n'"${added}"$'\n'
+[ -n "$changed" ] && notes="${notes}### Changed"$'\n\n'"${changed}"$'\n'
+[ -n "$fixed" ] && notes="${notes}### Fixed"$'\n\n'"${fixed}"$'\n'
+[ -n "$removed" ] && notes="${notes}### Removed"$'\n\n'"${removed}"$'\n'
+[ -n "$notes" ] || notes="_No pull requests merged since ${last_tag:-the beginning}._"$'\n'
+
+bump_source="computed"
+case "$target" in
+  "" | auto)
+    [ -n "$bump" ] ||
+      die "nothing merged since ${last_tag:-the beginning}: no release to prepare (pass X.Y.Z or patch|minor|major to force one)"
+    target="$bump"
+    info "version bump: $bump, computed from what merged since ${last_tag:-the beginning}:"
+    printf '%s' "$bump_why" | sed 's/^/      /'
+    ;;
+  *) bump_source="manual" ;;
+esac
+
+case "$target" in
+  patch | minor | major) next="$(semver_bump "$last_version" "$target")" ;;
+  *) next="${target#v}" ;;
+esac
+semver_valid "$next" || die "'$target' is not X.Y.Z, patch, minor or major"
+semver_gt "$next" "$last_version" || die "$next is not greater than $last_version (latest tag ${last_tag:-none}, $VERSION_SOURCE $current_version)"
+tag="v$next"
+release_branch="chore/release-$next"
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "tag $tag already exists"
+if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+  die "tag $tag already exists on origin"
+fi
+git rev-parse -q --verify "refs/heads/$release_branch" >/dev/null &&
+  die "branch $release_branch already exists locally (git branch -D $release_branch)"
+if git ls-remote --exit-code --heads origin "$release_branch" >/dev/null 2>&1; then
+  die "branch $release_branch already exists on origin: is a release PR already open?"
+fi
+
+info "release: ${last_tag:-none} -> $tag ($PACKAGE_LABEL)"
+
+if [ "$bump_source" = computed ]; then
+  version_line="**${bump}**, computed from the pull requests merged since ${last_tag:-the beginning} (a breaking change → major, \`feat\` → minor, anything else → patch). Decided by:"$'\n\n'"${bump_why}"
+elif [ -n "$bump" ]; then
+  version_line="**${next}**, set by hand (\`bin/release-prepare ${target}\`); the computed bump would be **${bump}**."$'\n'
+else
+  version_line="**${next}**, set by hand (\`bin/release-prepare ${target}\`); nothing merged since ${last_tag:-the beginning}."$'\n'
+fi
+
+compare=""
+[ -n "$last_tag" ] && compare="**Full diff:** https://github.com/${REPO_SLUG}/compare/${last_tag}...${tag}"$'\n'
+
+pr_title="chore(release): $tag"
+pr_body="$(cat <<EOF
+## ${PACKAGE_LABEL} ${tag}
+
+<!-- release-notes:start -->
+${notes}${compare}<!-- release-notes:end -->
+
+---
+
+**Version:** ${version_line}
+
+Merging this pull request releases **${tag}**. On the push to \`main\`,
+\`.github/workflows/release.yml\` re-runs CI on the merge commit, ${PUBLISH_SENTENCE}, and
+posts the release to Slack.
+
+The release notes are the text between the \`release-notes\` markers above, read from this
+pull request when it merges: edit them here, before merging.
+
+_Opened by \`bin/release-prepare\`._
+EOF
+)"
+
+# --- 3. version bump --------------------------------------------------------------------
+
+if [ "$dry_run" = 1 ]; then
+  preflight_checks dry
+  echo
+  info "dry run: nothing written"
+  echo "  version:  $current_version -> $next ($VERSION_SOURCE)"
+  if [ "$bump_source" = computed ]; then echo "  bump:     $bump (computed)"; else echo "  bump:     manual (computed: ${bump:-none})"; fi
+  echo "  files:    $VERSION_FILES"
+  echo "  branch:   $release_branch"
+  echo "  commit:   chore(release): $tag"
+  echo "  PR title: $pr_title"
+  if [ "$gh_ok" = 1 ]; then echo "  gh:       signed in"; else echo "  gh:       not signed in (a real run refuses)"; fi
+  echo
+  echo "----- PR body -----"
+  printf '%s\n' "$pr_body"
+  echo "-------------------"
+  exit 0
+fi
+
+# From here on the repo is changed: if anything stops the run before the push, put main
+# back the way it was and drop the half-made release branch.
+stage="branching"
+on_exit() {
+  local status=$?
+  if [ "$status" != 0 ] && [ "$stage" = "branching" ]; then
+    warn "stopped before the push: back on main, $release_branch and its changes discarded"
+    git reset --quiet --hard HEAD >/dev/null 2>&1 || true
+    git switch --quiet main >/dev/null 2>&1 || true
+    git branch -D "$release_branch" >/dev/null 2>&1 || true
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+
+git switch --quiet -c "$release_branch"
+preflight_checks real
+info "bumping $VERSION_SOURCE to $next"
+write_version "$current_version" "$next"
+[ "$(read_version)" = "$next" ] || die "$VERSION_SOURCE still reads $(read_version) after the bump"
+
+# Only the version files may change: anything else (a tool rewriting a file it should not,
+# a stray build artefact) stops the release instead of riding along unreviewed.
+unexpected=""
+for f in $(git status --porcelain --untracked-files=all | awk '{ print $NF }'); do
+  case " $VERSION_FILES " in *" $f "*) ;; *) unexpected="$unexpected $f" ;; esac
+done
+[ -z "$unexpected" ] || die "files outside the version bump changed:$unexpected"
+git --no-pager diff --stat
+
+# shellcheck disable=SC2086 # VERSION_FILES is a word list on purpose
+git add -- $VERSION_FILES
+git commit --quiet -m "chore(release): $tag" \
+  -m "Merging the release pull request publishes ${tag} through .github/workflows/release.yml."
+git push --quiet -u origin "$release_branch"
+stage="pushed"
+
+notes_file="$(mktemp "${TMPDIR:-/tmp}/release-notes.XXXXXX")"
+printf '%s\n' "$pr_body" >"$notes_file"
+if ! url="$(gh pr create --base main --head "$release_branch" --title "$pr_title" --body-file "$notes_file")"; then
+  rm -f "$notes_file"
+  git switch --quiet main || true
+  die "pushed $release_branch, but gh pr create failed: open the PR by hand (title '$pr_title')"
+fi
+rm -f "$notes_file"
+git switch --quiet main
+
+echo
+info "opened $url"
+info "review it (edit the notes in the PR body if needed), get it approved and merge it:"
+info "the release workflow publishes $tag, tags it and posts to Slack."

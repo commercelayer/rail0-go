@@ -13,6 +13,13 @@ on:
   pull_request:
   push:
     branches: [main]
+  # release.yml calls this as its gate, on the exact commit it is about to tag.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to check (default: the commit of the triggering event)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -22,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }} # empty outside workflow_call: the event's own commit
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -53,3 +62,8 @@ jobs:
       # recomputation, so a broken field mapping fails here rather than on-chain.
       - name: Test
         run: go test ./...
+
+      # bin/release-prepare opens every release pull request; its test drives it against
+      # a throwaway repository (no network, no GitHub), refusals and one full run included.
+      - name: bin/release-prepare
+        run: bin/release-prepare-test

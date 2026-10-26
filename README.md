@@ -1075,6 +1075,40 @@ go build ./...
 > registry (`stablecoins.go`) are hand-maintained and never overwritten by the
 > generator.
 
+## Releasing
+
+A release is an approved pull request: merging it is what tags the module.
+
+1. `bin/release-prepare`, on an up-to-date, clean `main`. It computes the version from the titles of the pull requests merged since the last tag
+   (Conventional Commits): a breaking change — `!` after the type, as in `feat(api)!:`, or a
+   `BREAKING CHANGE:` footer — makes it a major, any `feat` a minor, anything else a patch,
+   and it refuses when nothing merged. `bin/release-prepare minor` (or `patch`, `major`,
+   `X.Y.Z`) sets it by hand instead. The release PR says which pull requests decided it.
+   It then bumps `Version` in `version.go`, writes the release notes
+   from the pull requests merged since the last tag, and opens `chore(release): vX.Y.Z`.
+   `--dry-run` prints all of it and writes nothing.
+2. Review the pull request (edit the notes in its body if needed), approve and merge it.
+   The approval must come from a reviewer **other than the pull request's author**, on its
+   final commit: release.yml checks it before publishing anything and stops otherwise —
+   an admin merge that bypassed the review, a direct push to `main` or a resume of an
+   unapproved release publishes nothing.
+3. `.github/workflows/release.yml` runs on that push to `main`: CI again on the release
+   commit, then the tag `vX.Y.Z` (which is what publishes a Go module) and the GitHub
+   release (notes from the pull request), then a Slack message.
+
+A merge that does not change the version releases nothing; never push a `v*` tag by hand.
+`rail0.Version` reports the module's own version. If a run stops halfway, Actions →
+release → Run workflow (on `main`) resumes it.
+
+One-time settings (repository admins):
+
+- environment `release` (Settings → Environments), deployment limited to `main`;
+- a tag ruleset on `v*`: block updates and deletions, restrict creation to GitHub Actions
+  and admins;
+- branch protection on `main`: required `ci` check, "Include administrators";
+- the Slack channel: `release.yml` posts through the `PIPELINE_SLACK_CHANNEL_WEBHOOK_URL`
+  secret, named in one place (the `announce` job).
+
 ## License
 
 [MIT](LICENSE)
