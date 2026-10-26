@@ -94,9 +94,14 @@ git push --quiet origin main
 IFS=. read -r x y z <<<"$current"
 patch="$x.$y.$((z + 1))"
 minor="$x.$((y + 1)).0"
+major="$((x + 1)).0.0"
 
 out="$(run --dry-run)"
-expect_contains "no argument, no terminal: patch" "$out" "-> v$patch"
+expect_contains "no argument: the bump is computed (a '!' makes it major)" "$out" "-> v$major"
+expect_contains "computed bump in the dry run" "$out" "bump:     major (computed)"
+expect_contains "the PR body names what decided it" "$out" "- refactor!: remove the legacy client (#13)"
+expect_absent "a lower level does not decide a major" "$out" "- feat(payments): add the thing (#10)"
+expect_contains "the PR body says how it was computed" "$out" "**Version:** **major**, computed"
 expect_contains "Added: feat with its scope" "$out" "- **payments:** add the thing (#10)"
 expect_contains "Fixed: squash-merged fix" "$out" "- correct the rounding (#11)"
 expect_contains "Removed: breaking removal" "$out" "- remove the legacy client **(breaking)** (#13)"
@@ -105,7 +110,9 @@ expect_absent "previous release PRs are left out" "$out" "9.9.9"
 expect_contains "notes inside the markers" "$out" "<!-- release-notes:end -->"
 [ -z "$(git status --porcelain)" ] && pass "dry run writes nothing" || fail "dry run changed the tree"
 
-expect_contains "minor" "$(run minor --dry-run)" "-> v$minor"
+out="$(run minor --dry-run)"
+expect_contains "minor by hand" "$out" "-> v$minor"
+expect_contains "a manual bump says so, and what it overrides" "$out" "set by hand (\`bin/release-prepare minor\`); the computed bump would be **major**"
 expect_contains "explicit version with a v" "$(run "v$minor" --dry-run)" "-> v$minor"
 expect_contains "refuses the current version" "$(run "$current" --dry-run || true)" "is not greater than"
 expect_contains "refuses non-semver" "$(run 1.2 --dry-run || true)" "is not X.Y.Z"
@@ -118,7 +125,7 @@ rm dirt.txt
 git switch --quiet -c topic
 expect_contains "refuses a branch other than main" "$(run --dry-run || true)" "run this on main"
 expect_contains "test override works with --dry-run" \
-  "$(RELEASE_PREPARE_SKIP_GIT_CHECKS=1 run --dry-run)" "-> v$patch"
+  "$(RELEASE_PREPARE_SKIP_GIT_CHECKS=1 run --dry-run)" "-> v$major"
 expect_contains "test override refused without --dry-run" \
   "$(RELEASE_PREPARE_SKIP_GIT_CHECKS=1 run || true)" "honoured only with --dry-run"
 git switch --quiet main
@@ -127,33 +134,64 @@ git commit --quiet --allow-empty -m "local only"
 expect_contains "refuses main ahead of origin/main" "$(run --dry-run || true)" "not in sync"
 git reset --quiet --hard origin/main
 
-git push --quiet origin "HEAD:refs/heads/chore/release-$patch"
+git push --quiet origin "HEAD:refs/heads/chore/release-$major"
 expect_contains "refuses an existing release branch" "$(run --dry-run || true)" "already exists on origin"
-git push --quiet origin --delete "chore/release-$patch"
+git push --quiet origin --delete "chore/release-$major"
 
 # A real run, against the stubbed gh.
 out="$(run)"
 expect_contains "real run opens the PR" "$out" "opened https://github.com/example/repo/pull/99"
 [ "$(git symbolic-ref --short HEAD)" = main ] && pass "back on main" || fail "not back on main"
-if git ls-remote --exit-code --heads origin "chore/release-$patch" >/dev/null; then
+if git ls-remote --exit-code --heads origin "chore/release-$major" >/dev/null; then
   pass "release branch pushed"
-  git fetch --quiet origin "chore/release-$patch"
+  git fetch --quiet origin "chore/release-$major"
   subject="$(git log -1 --format=%s FETCH_HEAD)"
-  [ "$subject" = "chore(release): v$patch" ] && pass "commit subject" || fail "commit subject: $subject"
+  [ "$subject" = "chore(release): v$major" ] && pass "commit subject" || fail "commit subject: $subject"
   changed="$(git diff --name-only origin/main FETCH_HEAD | tr '\n' ' ')"
   for f in $changed; do
     case " $FILES " in *" $f "*) ;; *) fail "unexpected file in the release commit: $f" ;; esac
   done
   [ -n "$changed" ] && pass "release commit touches only version files ($changed)" || fail "release commit is empty"
-  if git diff origin/main FETCH_HEAD | grep '^+' | grep -qF "$patch"; then
-    pass "version files bumped to $patch"
+  if git diff origin/main FETCH_HEAD | grep '^+' | grep -qF "$major"; then
+    pass "version files bumped to $major"
   else
-    fail "version files not bumped to $patch"
+    fail "version files not bumped to $major"
   fi
 else
   fail "release branch not pushed"
 fi
-[ -z "$(git tag -l "v$patch")" ] && pass "no tag created locally" || fail "a tag was created"
+[ -z "$(git tag -l "v$major")" ] && pass "no tag created locally" || fail "a tag was created"
+
+# The computed bump, level by level: each case releases what merged since a fresh tag.
+retag() { git tag "$1" && git push --quiet origin "$1"; }
+retag "v$major"
+merge_pr 20 "fix(api): handle the 404"
+merge_pr 21 "feat(wallets): list the balances"
+merge_pr 22 "docs: typo"
+git push --quiet origin main
+out="$(run --dry-run)"
+expect_contains "a feat makes it minor" "$out" "-> v$((x + 1)).1.0"
+expect_contains "the feat decided it" "$out" "- feat(wallets): list the balances (#21)"
+
+retag "v$((x + 1)).1.0"
+merge_pr 23 "fix: round down"
+merge_pr 24 "chore(deps): bump the SDK"
+git push --quiet origin main
+out="$(run --dry-run)"
+expect_contains "fixes and chores make it a patch" "$out" "-> v$((x + 1)).1.1"
+expect_contains "every patch-level PR is listed" "$out" "- chore(deps): bump the SDK (#24)"
+
+retag "v$((x + 1)).1.1"
+echo footer >>changes.txt && git add changes.txt &&
+  git commit --quiet -m "feat: new signing flow (#25)" -m "BREAKING CHANGE: the old signer is gone"
+git push --quiet origin main
+out="$(run --dry-run)"
+expect_contains "a BREAKING CHANGE footer makes it major" "$out" "-> v$((x + 2)).0.0"
+expect_contains "and marks the note as breaking" "$out" "new signing flow **(breaking)** (#25)"
+
+retag "v$((x + 2)).0.0"
+expect_contains "refuses when nothing merged" "$(run --dry-run || true)" "nothing merged since"
+expect_contains "unless a version is forced" "$(run patch --dry-run)" "-> v$((x + 2)).0.1"
 
 echo
 if [ "$failures" -gt 0 ]; then

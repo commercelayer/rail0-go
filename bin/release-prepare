@@ -10,8 +10,8 @@
 # Nothing here publishes, tags or touches a registry: the only thing that can release is
 # an approved, merged pull request.
 #
-#   bin/release-prepare                   # asks patch/minor/major (patch without a terminal)
-#   bin/release-prepare minor             # or patch, major, or an explicit X.Y.Z
+#   bin/release-prepare                   # version computed from the merged PR titles
+#   bin/release-prepare minor             # by hand: patch, minor, major or an explicit X.Y.Z
 #   bin/release-prepare 1.10.0 --dry-run  # print what it would do, write nothing
 #
 # A Go module is published by its tag alone: the workflow has nothing to upload, it
@@ -56,9 +56,12 @@ chore/release-X.Y.Z with a pull request titled "chore(release): vX.Y.Z".
 Merging that pull request is what releases: .github/workflows/release.yml
 publishes, tags and announces it.
 
-  X.Y.Z            the version to release (must be greater than the latest v* tag)
-  patch|minor|major bump the latest tag; with no argument you are asked, or
-                   patch is used when there is no terminal
+  (no argument)    the version is computed from the pull requests merged since the
+                   latest v* tag (Conventional Commits): a breaking change ("!" after
+                   the type, or "BREAKING CHANGE:" in the commit body) -> major, any
+                   feat -> minor, anything else -> patch. Refuses when nothing merged.
+  X.Y.Z            the version to release by hand (must be greater than the latest tag)
+  patch|minor|major bump the latest tag by hand, overriding the computed bump
   --dry-run        print the version, the files, the notes and the pull request,
                    and change nothing (no commit, no branch, no push)
 
@@ -184,18 +187,100 @@ else
   warn "no vX.Y.Z tag yet: bumping from $VERSION_SOURCE ($current_version); the notes cover the whole history"
 fi
 
-if [ -z "$target" ]; then
-  if [ -t 0 ] && [ -t 1 ]; then
-    printf 'Latest release: %s. Next version: patch (%s), minor (%s), major (%s) or X.Y.Z [patch]: ' \
-      "${last_tag:-none}" "$(semver_bump "$last_version" patch)" \
-      "$(semver_bump "$last_version" minor)" "$(semver_bump "$last_version" major)"
-    read -r target || true
-    target="${target:-patch}"
-  else
-    target="patch"
-    info "no version given and no terminal: defaulting to patch"
+# --- 2. what merged since the last tag: release notes and the computed bump --------------
+
+# Lines "NUMBER<US>TITLE<US>BREAKING" (US = \037, the unit separator: unlike a tab it is
+# not IFS whitespace, so an empty NUMBER survives `read`; BREAKING is "!" or empty) of what landed on main since the last
+# tag. The git range, not `gh pr list --search merged:>DATE`: the tag sits on the merge
+# commit of the previous release PR, whose commit time and GitHub's mergedAt differ by a
+# second or so, so a date search drags that release PR back into the next notes. The
+# range is exact, needs no network, and is the same thing the tag will cover.
+#
+# First-parent history of main: a merge commit carries the PR title as its first body
+# line, a squash merge carries it as the subject ending in "(#N)", and a rebase-merged
+# commit is listed by its subject.
+list_merged_prs() {
+  local range="origin/main"
+  [ -n "$last_tag" ] && range="$last_tag..origin/main"
+  git log --first-parent --format='%s%x1f%b%x1e' "$range" | awk -v RS='\036' -v FS='\037' '
+    {
+      sub(/^\n+/, "", $1); subject = $1; body = $2
+      sub(/^\n+/, "", body); split(body, lines, "\n"); first = lines[1]
+      # A "BREAKING CHANGE:" footer anywhere in the body marks the change as breaking
+      # even when the title has no "!" (a squash merge carries the PR description there).
+      brk = (body ~ /(^|\n)BREAKING[ -]CHANGE:/) ? "!" : ""
+      if (match(subject, /^Merge pull request #[0-9]+/)) {
+        n = substr(subject, 21, RLENGTH - 20)
+        print n "\037" (first != "" ? first : subject) "\037" brk
+      } else if (match(subject, /\(#[0-9]+\)$/)) {
+        n = substr(subject, RSTART + 2, RLENGTH - 3)
+        print n "\037" substr(subject, 1, RSTART - 2) "\037" brk
+      } else if (subject != "" && subject !~ /^Merge /) {
+        print "\037" subject "\037" brk
+      }
+    }'
+}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+bump_rank() { case "$1" in major) echo 3 ;; minor) echo 2 ;; patch) echo 1 ;; *) echo 0 ;; esac; }
+
+added="" changed="" fixed="" removed=""
+# The computed bump (Conventional Commits, as the semver rule reads them) and the pull
+# requests that decided it: only those at the highest level, so the release PR can say
+# exactly why it is a major, a minor or a patch.
+bump="" bump_why=""
+cc_re='^([A-Za-z]+)(\(([^)]*)\))?(!)?:[[:space:]]*(.*)$'
+prs="$(list_merged_prs | sort -n)"
+while IFS=$'\037' read -r number title body_breaking; do
+  [ -n "$title" ] || continue
+  case "$title" in "chore(release):"*) continue ;; esac
+  type="" scope="" breaking="" subject="$title"
+  if [[ "$title" =~ $cc_re ]]; then
+    type="$(lower "${BASH_REMATCH[1]}")"
+    scope="${BASH_REMATCH[3]}"
+    breaking="${BASH_REMATCH[4]}"
+    subject="${BASH_REMATCH[5]}"
   fi
-fi
+  entry="- "
+  [ -n "$scope" ] && entry="${entry}**${scope}:** "
+  entry="${entry}${subject}"
+  [ -n "$body_breaking" ] && breaking="!"
+  [ -n "$breaking" ] && entry="${entry} **(breaking)**"
+  [ -n "$number" ] && entry="${entry} (#${number})"
+  case "$(lower "$subject")" in remove* | drop* | delete*) removing=1 ;; *) removing=0 ;; esac
+  if [ "$type" = "revert" ] || [ "$removing" = 1 ]; then
+    removed="${removed}${entry}"$'\n'
+  elif [ "$type" = "feat" ]; then
+    added="${added}${entry}"$'\n'
+  elif [ "$type" = "fix" ]; then
+    fixed="${fixed}${entry}"$'\n'
+  else # chore, docs, refactor, perf, ci, build, test, style, or no prefix
+    changed="${changed}${entry}"$'\n'
+  fi
+  if [ -n "$breaking" ]; then level=major; elif [ "$type" = "feat" ]; then level=minor; else level=patch; fi
+  if [ "$(bump_rank "$level")" -gt "$(bump_rank "$bump")" ]; then bump="$level" bump_why=""; fi
+  if [ "$level" = "$bump" ]; then bump_why="${bump_why}- ${title}${number:+ (#${number})}"$'\n'; fi
+done <<<"$prs"
+
+notes=""
+[ -n "$added" ] && notes="${notes}### Added"$'\n\n'"${added}"$'\n'
+[ -n "$changed" ] && notes="${notes}### Changed"$'\n\n'"${changed}"$'\n'
+[ -n "$fixed" ] && notes="${notes}### Fixed"$'\n\n'"${fixed}"$'\n'
+[ -n "$removed" ] && notes="${notes}### Removed"$'\n\n'"${removed}"$'\n'
+[ -n "$notes" ] || notes="_No pull requests merged since ${last_tag:-the beginning}._"$'\n'
+
+bump_source="computed"
+case "$target" in
+  "" | auto)
+    [ -n "$bump" ] ||
+      die "nothing merged since ${last_tag:-the beginning}: no release to prepare (pass X.Y.Z or patch|minor|major to force one)"
+    target="$bump"
+    info "version bump: $bump, computed from what merged since ${last_tag:-the beginning}:"
+    printf '%s' "$bump_why" | sed 's/^/      /'
+    ;;
+  *) bump_source="manual" ;;
+esac
 
 case "$target" in
   patch | minor | major) next="$(semver_bump "$last_version" "$target")" ;;
@@ -217,75 +302,13 @@ fi
 
 info "release: ${last_tag:-none} -> $tag ($PACKAGE_LABEL)"
 
-# --- 3. release notes -------------------------------------------------------------------
-
-# Lines "NUMBER<US>TITLE" (US = \037, the unit separator: unlike a tab it is not IFS
-# whitespace, so an empty NUMBER survives `read`) of what landed on main since the last
-# tag. The git range, not `gh pr list --search merged:>DATE`: the tag sits on the merge
-# commit of the previous release PR, whose commit time and GitHub's mergedAt differ by a
-# second or so, so a date search drags that release PR back into the next notes. The
-# range is exact, needs no network, and is the same thing the tag will cover.
-#
-# First-parent history of main: a merge commit carries the PR title as its first body
-# line, a squash merge carries it as the subject ending in "(#N)", and a rebase-merged
-# commit is listed by its subject.
-list_merged_prs() {
-  local range="origin/main"
-  [ -n "$last_tag" ] && range="$last_tag..origin/main"
-  git log --first-parent --format='%s%x1f%b%x1e' "$range" | awk -v RS='\036' -v FS='\037' '
-    {
-      sub(/^\n+/, "", $1); subject = $1; body = $2
-      sub(/^\n+/, "", body); split(body, lines, "\n"); first = lines[1]
-      if (match(subject, /^Merge pull request #[0-9]+/)) {
-        n = substr(subject, 21, RLENGTH - 20)
-        print n "\037" (first != "" ? first : subject)
-      } else if (match(subject, /\(#[0-9]+\)$/)) {
-        n = substr(subject, RSTART + 2, RLENGTH - 3)
-        print n "\037" substr(subject, 1, RSTART - 2)
-      } else if (subject != "" && subject !~ /^Merge /) {
-        print "\037" subject
-      }
-    }'
-}
-
-lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-
-added="" changed="" fixed="" removed=""
-cc_re='^([A-Za-z]+)(\(([^)]*)\))?(!)?:[[:space:]]*(.*)$'
-prs="$(list_merged_prs | sort -n)"
-while IFS=$'\037' read -r number title; do
-  [ -n "$title" ] || continue
-  case "$title" in "chore(release):"*) continue ;; esac
-  type="" scope="" breaking="" subject="$title"
-  if [[ "$title" =~ $cc_re ]]; then
-    type="$(lower "${BASH_REMATCH[1]}")"
-    scope="${BASH_REMATCH[3]}"
-    breaking="${BASH_REMATCH[4]}"
-    subject="${BASH_REMATCH[5]}"
-  fi
-  entry="- "
-  [ -n "$scope" ] && entry="${entry}**${scope}:** "
-  entry="${entry}${subject}"
-  [ -n "$breaking" ] && entry="${entry} **(breaking)**"
-  [ -n "$number" ] && entry="${entry} (#${number})"
-  case "$(lower "$subject")" in remove* | drop* | delete*) removing=1 ;; *) removing=0 ;; esac
-  if [ "$type" = "revert" ] || [ "$removing" = 1 ]; then
-    removed="${removed}${entry}"$'\n'
-  elif [ "$type" = "feat" ]; then
-    added="${added}${entry}"$'\n'
-  elif [ "$type" = "fix" ]; then
-    fixed="${fixed}${entry}"$'\n'
-  else # chore, docs, refactor, perf, ci, build, test, style, or no prefix
-    changed="${changed}${entry}"$'\n'
-  fi
-done <<<"$prs"
-
-notes=""
-[ -n "$added" ] && notes="${notes}### Added"$'\n\n'"${added}"$'\n'
-[ -n "$changed" ] && notes="${notes}### Changed"$'\n\n'"${changed}"$'\n'
-[ -n "$fixed" ] && notes="${notes}### Fixed"$'\n\n'"${fixed}"$'\n'
-[ -n "$removed" ] && notes="${notes}### Removed"$'\n\n'"${removed}"$'\n'
-[ -n "$notes" ] || notes="_No pull requests merged since ${last_tag:-the beginning}._"$'\n'
+if [ "$bump_source" = computed ]; then
+  version_line="**${bump}**, computed from the pull requests merged since ${last_tag:-the beginning} (a breaking change → major, \`feat\` → minor, anything else → patch). Decided by:"$'\n\n'"${bump_why}"
+elif [ -n "$bump" ]; then
+  version_line="**${next}**, set by hand (\`bin/release-prepare ${target}\`); the computed bump would be **${bump}**."$'\n'
+else
+  version_line="**${next}**, set by hand (\`bin/release-prepare ${target}\`); nothing merged since ${last_tag:-the beginning}."$'\n'
+fi
 
 compare=""
 [ -n "$last_tag" ] && compare="**Full diff:** https://github.com/${REPO_SLUG}/compare/${last_tag}...${tag}"$'\n'
@@ -299,6 +322,8 @@ ${notes}${compare}<!-- release-notes:end -->
 
 ---
 
+**Version:** ${version_line}
+
 Merging this pull request releases **${tag}**. On the push to \`main\`,
 \`.github/workflows/release.yml\` re-runs CI on the merge commit, ${PUBLISH_SENTENCE}, and
 posts the release to Slack.
@@ -310,13 +335,14 @@ _Opened by \`bin/release-prepare\`._
 EOF
 )"
 
-# --- 2. version bump --------------------------------------------------------------------
+# --- 3. version bump --------------------------------------------------------------------
 
 if [ "$dry_run" = 1 ]; then
   preflight_checks dry
   echo
   info "dry run: nothing written"
   echo "  version:  $current_version -> $next ($VERSION_SOURCE)"
+  if [ "$bump_source" = computed ]; then echo "  bump:     $bump (computed)"; else echo "  bump:     manual (computed: ${bump:-none})"; fi
   echo "  files:    $VERSION_FILES"
   echo "  branch:   $release_branch"
   echo "  commit:   chore(release): $tag"
