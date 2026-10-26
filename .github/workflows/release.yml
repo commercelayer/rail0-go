@@ -104,9 +104,57 @@ jobs:
             echo "- commit: \`$commit\`"
           } >>"$GITHUB_STEP_SUMMARY"
 
+  # No release without a second person. The commit that set the version must have reached
+  # main through a merged pull request that a reviewer OTHER THAN ITS AUTHOR approved, on
+  # the pull request's final commit (an approval followed by a new push, a dismissal or a
+  # change request does not count). Branch protection already asks for a review, but an
+  # admin can bypass it, a bare push to main has no review at all, and a "Run workflow"
+  # resume runs long after the merge: this job is the check that cannot be skipped, on the
+  # exact commit about to ship. Bots never count as the reviewer.
+  approval:
+    name: Approved by a third-party reviewer
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Release pull request approved by someone other than its author
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+        run: |
+          set -euo pipefail
+          prs="$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main") | .number | tostring] | join(" ")')"
+          if [ -z "$prs" ]; then
+            echo "::error::$COMMIT did not reach main through a merged pull request: a release needs an approved release PR"
+            exit 1
+          fi
+          for pr in $prs; do
+            author="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .user.login)"
+            head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .head.sha)"
+            # Reviews come oldest first: the last non-comment state per reviewer is theirs.
+            approvers="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
+              --jq '.[] | [.user.login, .state, .commit_id] | @tsv' |
+              awk -F'\t' -v author="$author" -v head="$head" '
+                $1 ~ /\[bot\]$/ || $2 == "COMMENTED" || $2 == "PENDING" { next }
+                { last[$1] = $2; at[$1] = $3 }
+                END { for (u in last) if (u != author && last[u] == "APPROVED" && at[u] == head) print u }')"
+            if [ -n "$approvers" ]; then
+              approvers="$(echo $approvers)"
+              echo "::notice::#$pr by $author, approved by $approvers"
+              echo "- approved: #$pr (author $author) by $approvers" >>"$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          echo "::error::the release PR (#${prs// /, #}) has no approval from a reviewer other than its author on its final commit: nothing is published"
+          exit 1
+
   gate:
     name: CI on the release commit
-    needs: plan
+    needs: [plan, approval]
     if: needs.plan.outputs.release == 'true'
     uses: ./.github/workflows/ci.yml
     with:
@@ -114,7 +162,7 @@ jobs:
 
   publish:
     name: Tag and release
-    needs: [plan, gate]
+    needs: [plan, approval, gate]
     runs-on: ubuntu-latest
     environment:
       name: release
