@@ -579,6 +579,14 @@ me, err := client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
 // A pointer, so that false is a value and nil leaves it alone.
 off := false
 me, err = client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{PriorityTip: &off})
+
+// The payment windows of the account's NEW payments: a number of seconds, or back to the
+// gateway default (sent as null); nil leaves a window alone. me.PaymentWindows says which
+// are the account's own and the bounds (422 invalid_payment_windows outside them).
+me, err = client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
+    AuthorizationTTL: rail0.WindowSeconds(2 * 86400),
+    RefundTTL:        rail0.WindowDefault(),
+})
 ```
 
 `Update` edits only the holder's own profile. Name and email are each unique across

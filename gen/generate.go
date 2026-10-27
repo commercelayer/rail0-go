@@ -254,15 +254,17 @@ var mergeInto = map[string]string{
 // reshaped) type. Health/Session/Nonce are exposed by the client as
 // HealthResponse/AuthResponse/NonceResponse with hand-tuned fields.
 //
-// Account is hand-maintained in accounts.go for the same reason. AdminContract is
+// Account is hand-maintained in accounts.go for the same reason, and so is
+// PaymentWindows, whose per-window objects would otherwise generate as `any`. AdminContract is
 // skipped because it is admin-only: the SDK tracks the public surface, and the
 // operator's deployment bookkeeping is rail0-admin's concern, not a client's.
 var skipSchemas = map[string]bool{
-	"Health":        true,
-	"Session":       true,
-	"Nonce":         true,
-	"Account":       true,
-	"AdminContract": true,
+	"Health":         true,
+	"Session":        true,
+	"Nonce":          true,
+	"Account":        true,
+	"PaymentWindows": true,
+	"AdminContract":  true,
 }
 
 // ================================================================
