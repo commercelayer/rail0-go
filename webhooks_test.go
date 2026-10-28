@@ -63,3 +63,28 @@ func TestWebhooksRedeliverSurfacesNotFound(t *testing.T) {
 		t.Errorf("err = %v, want a 404 *APIError", err)
 	}
 }
+
+// Test is a POST on the webhook's test path, and a refusal by the endpoint is a result,
+// not an error: the gateway answers 200 either way and Delivered is the verdict.
+func TestWebhooksTestReportsTheEndpointsAnswer(t *testing.T) {
+	const webhookID = "019f8a3d-0000-7000-8000-000000000001"
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"delivered":false,"response_code":"401","response_message":"bad signature","error_reason":null,"duration_ms":12}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt"})
+	res, err := c.Webhooks.Test(context.Background(), webhookID)
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/webhooks/"+webhookID+"/test" {
+		t.Errorf("request = %s %s, want POST /webhooks/%s/test", gotMethod, gotPath, webhookID)
+	}
+	if res.Delivered || res.ResponseCode != "401" || res.ResponseMessage != "bad signature" || res.DurationMs != 12 {
+		t.Errorf("result not decoded: %+v", res)
+	}
+}

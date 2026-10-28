@@ -118,6 +118,44 @@ func TestAccountsUpdateSendsPriorityTipFalse(t *testing.T) {
 	}
 }
 
+// A payment window is sent as seconds, or as null to go back to the default, and an
+// unset one is not sent at all; the profile's windows and their rules decode.
+func TestAccountsUpdateSendsPaymentWindows(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"acc","name":"Merchant","email":"merchant@rail0.test","priority_tip":true,` +
+			`"authorization_ttl":172800,"refund_ttl":2592000,"payment_windows":{` +
+			`"authorization_ttl":{"custom":true,"default":604800,"min":3600,"max":2592000},` +
+			`"refund_ttl":{"custom":false,"default":2592000,"max":15552000},"min_refund_window":86400}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt"})
+	account, err := c.Accounts.Update(context.Background(), "acc", UpdateAccountRequest{
+		AuthorizationTTL: WindowSeconds(172800),
+		RefundTTL:        WindowDefault(),
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if v := gotBody["authorization_ttl"]; v != float64(172800) {
+		t.Errorf("body authorization_ttl = %v, want 172800", v)
+	}
+	if v, ok := gotBody["refund_ttl"]; !ok || v != nil {
+		t.Errorf("body refund_ttl = %v (present %v), want null", v, ok)
+	}
+	if len(gotBody) != 2 {
+		t.Errorf("body = %v, want the two windows alone", gotBody)
+	}
+	if account.AuthorizationTTL != 172800 || account.PaymentWindows == nil ||
+		!account.PaymentWindows.AuthorizationTTL.Custom || account.PaymentWindows.MinRefundWindow != 86400 {
+		t.Errorf("windows not decoded: %+v %+v", account, account.PaymentWindows)
+	}
+}
+
 // A taken name or email is the gateway's 409 conflict, and it must reach the caller as a
 // typed APIError it can branch on rather than a decoded-but-empty account.
 func TestAccountsUpdateSurfacesAConflict(t *testing.T) {

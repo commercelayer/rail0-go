@@ -38,27 +38,29 @@ const (
 // cross-account list by payee account, by the presence of a last_error_code, and
 // to authorizations whose expiry falls within that many seconds from now.
 type ListPaymentsParams struct {
-	Status         string   // filter by one payment status
-	Statuses       []string // filter by several payment statuses (e.g. {"authorized", "expired"}); unioned with Status
-	Mode           string   // filter by mode ("authorize" or "charge")
-	Payer          string   // filter by payer address
-	Payee          string   // filter by payee address
-	Token          string   // filter by token address
-	Rail0ID        string   // filter by the logical on-chain payment id (0x…)
-	ChainID        int      // filter by the payment's chain (resolved via its contract); 0 = no filter
-	Disputed       *bool    // filter by whether an open dispute exists; nil = no filter
-	MinAmount      string   // minimum amount in token base units (inclusive)
-	MaxAmount      string   // maximum amount in token base units (inclusive)
-	CreatedFrom    string   // only payments created at/after this ISO-8601 time
-	CreatedTo      string   // only payments created at/before this ISO-8601 time
-	Operation      string   // only payments carrying at least one transaction with this operation (e.g. "dispute")
-	Scope          string   // "mine" (default) or "all" (admin only: every payment on the gateway)
-	AccountID      string   // Scope "all" only: payments whose payee is one of this account's wallets
-	HasError       *bool    // Scope "all" only: true = payments carrying a last_error_code, false = none; nil = no filter
-	ExpiringWithin int      // Scope "all" only: authorized payments expiring within this many seconds (1..90 days); 0 = no filter
-	Sort           string   // sort fields: comma-separated, prefix with - for desc
-	Page           int      // page number (1-based); 0 = use server default
-	PerPage        int      // items per page; 0 = use server default
+	Status          string   // filter by one payment status
+	Statuses        []string // filter by several payment statuses (e.g. {"authorized", "expired"}); unioned with Status
+	Mode            string   // filter by mode ("authorize" or "charge")
+	Payer           string   // filter by payer address
+	Payee           string   // filter by payee address
+	Token           string   // filter by token address
+	Rail0ID         string   // filter by the logical on-chain payment id (0x…)
+	Reference       string   // filter by the payment's reference in the merchant's system (exact)
+	ReferenceOrigin string   // filter by the system the reference comes from
+	ChainID         int      // filter by the payment's chain (resolved via its contract); 0 = no filter
+	Disputed        *bool    // filter by whether an open dispute exists; nil = no filter
+	MinAmount       string   // minimum amount in token base units (inclusive)
+	MaxAmount       string   // maximum amount in token base units (inclusive)
+	CreatedFrom     string   // only payments created at/after this ISO-8601 time
+	CreatedTo       string   // only payments created at/before this ISO-8601 time
+	Operation       string   // only payments carrying at least one transaction with this operation (e.g. "dispute")
+	Scope           string   // "mine" (default) or "all" (admin only: every payment on the gateway)
+	AccountID       string   // Scope "all" only: payments whose payee is one of this account's wallets
+	HasError        *bool    // Scope "all" only: true = payments carrying a last_error_code, false = none; nil = no filter
+	ExpiringWithin  int      // Scope "all" only: authorized payments expiring within this many seconds (1..90 days); 0 = no filter
+	Sort            string   // sort fields: comma-separated, prefix with - for desc
+	Page            int      // page number (1-based); 0 = use server default
+	PerPage         int      // items per page; 0 = use server default
 }
 
 // List returns payments for the authenticated account (requires JWT). The
@@ -87,6 +89,12 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 		}
 		if p.Rail0ID != "" {
 			q.Set("rail0_id", p.Rail0ID)
+		}
+		if p.Reference != "" {
+			q.Set("reference", p.Reference)
+		}
+		if p.ReferenceOrigin != "" {
+			q.Set("reference_origin", p.ReferenceOrigin)
 		}
 		if p.ChainID > 0 {
 			q.Set("chain_id", strconv.Itoa(p.ChainID))

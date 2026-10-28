@@ -2,10 +2,11 @@ package rail0
 
 import (
 	"context"
+	"encoding/json"
 )
 
 // AccountsService reads and edits the merchant account itself (requires JWT):
-// name, contact email and the priority_tip fee setting.
+// name, contact email, the priority_tip fee setting and the payment windows.
 //
 // Get and Update are the whole surface by design. The gateway's
 // /accounts/{account_id} is behind an owner-or-operator guard: a merchant
@@ -32,13 +33,62 @@ type AccountsService struct {
 // capture, void, release, refund): true (the default) tips the network's suggested
 // priority fee, false uses the chain's minimum tip — 0 on most chains, 25 gwei on
 // Polygon PoS/Amoy. The buyer's dispute/close_dispute never read it.
+//
+// AuthorizationTTL and RefundTTL are the payment windows the account's NEW
+// payments are created with, in seconds — the account's own or the gateway
+// default; PaymentWindows says which, and the bounds a new value must fit. Zero
+// and nil only from a gateway that predates them.
 type Account struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Email       string `json:"email"`
-	PriorityTip bool   `json:"priority_tip"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Email            string          `json:"email"`
+	PriorityTip      bool            `json:"priority_tip"`
+	AuthorizationTTL int             `json:"authorization_ttl,omitempty"`
+	RefundTTL        int             `json:"refund_ttl,omitempty"`
+	PaymentWindows   *PaymentWindows `json:"payment_windows,omitempty"`
+	CreatedAt        string          `json:"created_at,omitempty"`
+	UpdatedAt        string          `json:"updated_at,omitempty"`
+}
+
+// PaymentWindows is how an account's payment windows are set: per window,
+// whether it is the account's own (Custom) or the gateway default, the default,
+// and the bounds. The refund window has no floor of its own: the pair must keep
+// RefundTTL - AuthorizationTTL >= MinRefundWindow (the contract's one-day gap).
+type PaymentWindows struct {
+	AuthorizationTTL struct {
+		Custom  bool `json:"custom"`
+		Default int  `json:"default"`
+		Min     int  `json:"min"`
+		Max     int  `json:"max"`
+	} `json:"authorization_ttl"`
+	RefundTTL struct {
+		Custom  bool `json:"custom"`
+		Default int  `json:"default"`
+		Max     int  `json:"max"`
+	} `json:"refund_ttl"`
+	MinRefundWindow int `json:"min_refund_window"`
+}
+
+// WindowSetting is one payment window in an UpdateAccountRequest: a number of
+// seconds (WindowSeconds) or back to the gateway default (WindowDefault, sent as
+// null). A nil *WindowSetting leaves the window untouched — the three states a
+// plain *int cannot tell apart under omitempty.
+type WindowSetting struct {
+	seconds int
+}
+
+// WindowSeconds sets a payment window to n seconds.
+func WindowSeconds(n int) *WindowSetting { return &WindowSetting{seconds: n} }
+
+// WindowDefault puts a payment window back on the gateway default.
+func WindowDefault() *WindowSetting { return &WindowSetting{} }
+
+// MarshalJSON writes the seconds, or null for the default.
+func (w WindowSetting) MarshalJSON() ([]byte, error) {
+	if w.seconds == 0 {
+		return []byte("null"), nil
+	}
+	return json.Marshal(w.seconds)
 }
 
 // Get returns the account's own profile: id, name, email and timestamps.
@@ -59,10 +109,17 @@ func (s *AccountsService) Get(ctx context.Context, accountID string) (*Account, 
 // here, not an absence: Bool(false) switches the account's own transactions to
 // the chain's minimum tip, nil leaves the setting untouched. The account's active
 // flag is operator-only and is intentionally absent.
+//
+// AuthorizationTTL and RefundTTL set the payment windows of the account's NEW
+// payments (WindowSeconds / WindowDefault; nil leaves one untouched). Outside the
+// bounds in Account.PaymentWindows, or closer than its MinRefundWindow, the
+// gateway answers 422 invalid_payment_windows.
 type UpdateAccountRequest struct {
-	Name        string `json:"name,omitempty"`
-	Email       string `json:"email,omitempty"`
-	PriorityTip *bool  `json:"priority_tip,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	Email            string         `json:"email,omitempty"`
+	PriorityTip      *bool          `json:"priority_tip,omitempty"`
+	AuthorizationTTL *WindowSetting `json:"authorization_ttl,omitempty"`
+	RefundTTL        *WindowSetting `json:"refund_ttl,omitempty"`
 }
 
 // Update changes the account's own profile (PATCH /accounts/{account_id}) and

@@ -2,10 +2,16 @@
 # bin/release-prepare — open the release pull request for the rail0-go module.
 #
 # Releasing is three steps, and this is the first:
-#   1. bin/release-prepare           opens the release pull request (this script);
+#   1. bin/release-prepare           prepares the release pull request (this script);
 #   2. review, approve and merge it  (the release notes are in its body: edit them there);
 #   3. .github/workflows/release.yml, on the push to main, runs CI on the merge commit,
 #      publishes, creates the tag vX.Y.Z and the GitHub release, and posts to Slack.
+#
+# Two ways in, the same release on merge:
+#   - on main: opens a release-only pull request, chore/release-X.Y.Z;
+#   - on a feature branch with an open pull request: bumps the version ON that branch and
+#     writes the notes into that pull request, so ONE approval covers the change and its
+#     release.
 #
 # Nothing here publishes, tags or touches a registry: the only thing that can release is
 # an approved, merged pull request.
@@ -45,16 +51,34 @@ if [ -t 2 ]; then red=$'\033[31m' yellow=$'\033[33m' reset=$'\033[0m'; else red=
 die()  { printf '%serror:%s %s\n' "$red" "$reset" "$*" >&2; exit 1; }
 warn() { printf '%swarning:%s %s\n' "$yellow" "$reset" "$*" >&2; }
 info() { printf '==> %s\n' "$*"; }
+# The pull request's URL on a line of its own, last thing printed: a terminal that knows
+# OSC 8 makes it a hyperlink, and every terminal shows (and most auto-link) the URL text.
+print_pr_url() {
+  [ -n "$1" ] || return 0
+  echo
+  if [ -t 1 ]; then
+    printf '    \033]8;;%s\033\\%s\033]8;;\033\\\n' "$1" "$1"
+  else
+    printf '    %s\n' "$1"
+  fi
+}
 
 usage() {
   cat <<EOF
 Usage: bin/release-prepare [X.Y.Z|patch|minor|major] [--dry-run]
 
-Opens the release pull request for ${PACKAGE_LABEL}: bumps the version, writes the
-release notes from the pull requests merged since the last tag, and pushes
-chore/release-X.Y.Z with a pull request titled "chore(release): vX.Y.Z".
-Merging that pull request is what releases: .github/workflows/release.yml
-publishes, tags and announces it.
+Prepares the release of ${PACKAGE_LABEL}: bumps the version and writes the release
+notes from the pull requests merged since the last tag. Merging the pull request
+that carries the bump is what releases: .github/workflows/release.yml publishes,
+tags and announces it.
+
+  on main          pushes chore/release-X.Y.Z and opens a pull request titled
+                   "chore(release): vX.Y.Z".
+  on a branch      the branch's open pull request becomes the release: the bump is
+                   committed and pushed on the branch ("chore(release): vX.Y.Z"), the
+                   notes (what merged since the tag, plus this pull request) go into its
+                   description, and its own title counts toward the bump. Re-run it after
+                   new commits or a merge of main to refresh both.
 
   (no argument)    the version is computed from the pull requests merged since the
                    latest v* tag (Conventional Commits): a breaking change ("!" after
@@ -65,7 +89,9 @@ publishes, tags and announces it.
   --dry-run        print the version, the files, the notes and the pull request,
                    and change nothing (no commit, no branch, no push)
 
-Preconditions: on main, up to date with origin/main, clean tree, gh signed in.
+Preconditions: clean tree, gh signed in, and either main in sync with origin/main, or
+a branch in sync with its origin copy, containing origin/main, with an open pull
+request into main.
 EOF
 }
 
@@ -159,16 +185,60 @@ fi
 info "fetching origin (main and tags)"
 git fetch --quiet --tags origin main || die "git fetch origin failed"
 
+# The mode: on main a release-only pull request; on any other branch, that branch's own
+# open pull request carries the release. The test override keeps the main behaviour.
+branch="$(git symbolic-ref --quiet --short HEAD || true)"
+mode="main"
+if [ "$skip_git_checks" = 0 ] && [ "$branch" != "main" ]; then
+  [ -n "$branch" ] || die "run this on main or on a branch (current: detached HEAD)"
+  mode="branch"
+fi
+
+pr_number="" pr_title_now="" pr_body_now=""
 if [ "$skip_git_checks" = 0 ]; then
-  branch="$(git symbolic-ref --quiet --short HEAD || true)"
-  [ "$branch" = "main" ] || die "run this on main (current: ${branch:-detached HEAD})"
   [ -z "$(git status --porcelain)" ] || die "the working tree is not clean; commit or stash first"
-  [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
-    die "main is not in sync with origin/main (git pull --ff-only, or push your commits through a PR)"
+  if [ "$mode" = main ]; then
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
+      die "main is not in sync with origin/main (git pull --ff-only, or push your commits through a PR)"
+  else
+    git fetch --quiet origin "$branch" 2>/dev/null ||
+      die "$branch is not on origin: push it and open its pull request first"
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$branch")" ] ||
+      die "$branch is not in sync with origin/$branch (push or pull it first)"
+    # The version is computed above what main holds: a branch behind main would bump from
+    # a stale base and could collide with a release main already made.
+    git merge-base --is-ancestor origin/main HEAD ||
+      die "$branch does not contain origin/main: merge main into it first (git merge origin/main)"
+    if [ "$gh_ok" = 1 ]; then
+      pr_line="$(gh pr view "$branch" --json number,state,baseRefName \
+        --jq '[.number, .state, .baseRefName] | @tsv' 2>/dev/null || true)"
+      IFS=$'\t' read -r pr_number pr_state pr_base <<<"$pr_line"
+      [ -n "$pr_number" ] || die "$branch has no pull request: open one into main first"
+      [ "$pr_state" = OPEN ] || die "the pull request of $branch (#$pr_number) is $pr_state, not open"
+      [ "$pr_base" = main ] || die "the pull request of $branch (#$pr_number) targets $pr_base, not main"
+      pr_title_now="$(gh pr view "$pr_number" --json title --jq .title)"
+      pr_body_now="$(gh pr view "$pr_number" --json body --jq .body)"
+    else
+      warn "gh is missing or not signed in: the branch's pull request is not read (dry run only)"
+      pr_title_now="$branch"
+    fi
+  fi
 fi
 
 last_tag="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
-current_version="$(read_version)"
+# On a branch the version to bump from is MAIN's: the branch may already carry this
+# script's bump from an earlier run, and re-running must replace it, not bump it again.
+branch_version="$(read_version)"
+if [ "$mode" = branch ]; then
+  base_dir="$(mktemp -d "${TMPDIR:-/tmp}/release-prepare-base.XXXXXX")"
+  mkdir -p "$base_dir/$(dirname "$VERSION_SOURCE")"
+  git show "origin/main:$VERSION_SOURCE" >"$base_dir/$VERSION_SOURCE" ||
+    die "cannot read $VERSION_SOURCE on origin/main"
+  current_version="$(cd "$base_dir" && read_version)"
+  rm -rf "$base_dir"
+else
+  current_version="$branch_version"
+fi
 semver_valid "$current_version" || die "$VERSION_SOURCE holds '$current_version', not X.Y.Z"
 if [ -n "$last_tag" ]; then
   last_version="${last_tag#v}"
@@ -232,6 +302,14 @@ added="" changed="" fixed="" removed=""
 bump="" bump_why=""
 cc_re='^([A-Za-z]+)(\(([^)]*)\))?(!)?:[[:space:]]*(.*)$'
 prs="$(list_merged_prs | sort -n)"
+# On a branch, its own pull request is part of the release: its title counts toward the
+# bump and gets a line in the notes, like a merged one ("!" or a BREAKING CHANGE footer in
+# its description make it breaking).
+if [ "$mode" = branch ]; then
+  pr_breaking=""
+  case "$pr_body_now" in "BREAKING CHANGE:"* | *$'\n'"BREAKING CHANGE:"* | "BREAKING-CHANGE:"* | *$'\n'"BREAKING-CHANGE:"*) pr_breaking="!" ;; esac
+  prs="${prs}"$'\n'"${pr_number}"$'\037'"${pr_title_now}"$'\037'"${pr_breaking}"
+fi
 while IFS=$'\037' read -r number title body_breaking; do
   [ -n "$title" ] || continue
   case "$title" in "chore(release):"*) continue ;; esac
@@ -294,10 +372,12 @@ git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "tag $tag already e
 if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
   die "tag $tag already exists on origin"
 fi
-git rev-parse -q --verify "refs/heads/$release_branch" >/dev/null &&
-  die "branch $release_branch already exists locally (git branch -D $release_branch)"
-if git ls-remote --exit-code --heads origin "$release_branch" >/dev/null 2>&1; then
-  die "branch $release_branch already exists on origin: is a release PR already open?"
+if [ "$mode" = main ]; then
+  git rev-parse -q --verify "refs/heads/$release_branch" >/dev/null &&
+    die "branch $release_branch already exists locally (git branch -D $release_branch)"
+  if git ls-remote --exit-code --heads origin "$release_branch" >/dev/null 2>&1; then
+    die "branch $release_branch already exists on origin: is a release PR already open?"
+  fi
 fi
 
 info "release: ${last_tag:-none} -> $tag ($PACKAGE_LABEL)"
@@ -314,6 +394,12 @@ compare=""
 [ -n "$last_tag" ] && compare="**Full diff:** https://github.com/${REPO_SLUG}/compare/${last_tag}...${tag}"$'\n'
 
 pr_title="chore(release): $tag"
+if [ "$mode" = branch ]; then
+  merge_line="Merging this pull request also releases **${tag}**: its changes and the version bump
+ship together, under the one approval."
+else
+  merge_line="Merging this pull request releases **${tag}**."
+fi
 pr_body="$(cat <<EOF
 ## ${PACKAGE_LABEL} ${tag}
 
@@ -324,7 +410,7 @@ ${notes}${compare}<!-- release-notes:end -->
 
 **Version:** ${version_line}
 
-Merging this pull request releases **${tag}**. On the push to \`main\`,
+${merge_line} On the push to \`main\`,
 \`.github/workflows/release.yml\` re-runs CI on the merge commit, ${PUBLISH_SENTENCE}, and
 posts the release to Slack.
 
@@ -335,7 +421,34 @@ _Opened by \`bin/release-prepare\`._
 EOF
 )"
 
+# On a branch the release block goes INTO the pull request's description, between its own
+# markers, replacing the block an earlier run left there: the description above it stays.
+if [ "$mode" = branch ]; then
+  kept="$(printf '%s\n' "$pr_body_now" | awk '
+    /<!-- release:start -->/ { skip = 1; next }
+    /<!-- release:end -->/ { skip = 0; next }
+    !skip { print }')"
+  kept="$(printf '%s' "$kept" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
+  pr_body="${kept}"$'\n\n'"<!-- release:start -->"$'\n'"${pr_body}"$'\n'"<!-- release:end -->"
+fi
+
 # --- 3. version bump --------------------------------------------------------------------
+
+if [ "$dry_run" = 1 ] && [ "$mode" = branch ]; then
+  preflight_checks dry
+  echo
+  info "dry run: nothing written"
+  echo "  mode:     branch ($branch, pull request #${pr_number:-?})"
+  echo "  version:  $current_version -> $next ($VERSION_SOURCE)"
+  if [ "$bump_source" = computed ]; then echo "  bump:     $bump (computed)"; else echo "  bump:     manual (computed: ${bump:-none})"; fi
+  echo "  files:    $VERSION_FILES"
+  echo "  commit:   chore(release): $tag (on $branch)"
+  echo
+  echo "----- PR body -----"
+  printf '%s\n' "$pr_body"
+  echo "-------------------"
+  exit 0
+fi
 
 if [ "$dry_run" = 1 ]; then
   preflight_checks dry
@@ -352,6 +465,57 @@ if [ "$dry_run" = 1 ]; then
   echo "----- PR body -----"
   printf '%s\n' "$pr_body"
   echo "-------------------"
+  exit 0
+fi
+
+if [ "$mode" = branch ]; then
+  # The bump goes on the branch itself; anything that stops the run before the push puts
+  # the branch back where it was.
+  start_head="$(git rev-parse HEAD)"
+  stage="bumping"
+  on_exit_branch() {
+    local status=$?
+    if [ "$status" != 0 ] && [ "$stage" = "bumping" ]; then
+      warn "stopped before the push: $branch put back as it was"
+      git reset --quiet --hard "$start_head" >/dev/null 2>&1 || true
+    fi
+    exit "$status"
+  }
+  trap on_exit_branch EXIT
+
+  preflight_checks real
+  if [ "$branch_version" != "$next" ]; then
+    info "bumping $VERSION_SOURCE to $next on $branch"
+    write_version "$branch_version" "$next"
+    [ "$(read_version)" = "$next" ] || die "$VERSION_SOURCE still reads $(read_version) after the bump"
+    unexpected=""
+    for f in $(git status --porcelain --untracked-files=all | awk '{ print $NF }'); do
+      case " $VERSION_FILES " in *" $f "*) ;; *) unexpected="$unexpected $f" ;; esac
+    done
+    [ -z "$unexpected" ] || die "files outside the version bump changed:$unexpected"
+    git --no-pager diff --stat
+    # shellcheck disable=SC2086 # VERSION_FILES is a word list on purpose
+    git add -- $VERSION_FILES
+    git commit --quiet -m "chore(release): $tag" \
+      -m "Merging pull request #${pr_number} publishes ${tag} through .github/workflows/release.yml."
+    git push --quiet origin "HEAD:refs/heads/$branch"
+  else
+    info "$branch already carries $next: refreshing the notes only"
+  fi
+  stage="pushed"
+
+  notes_file="$(mktemp "${TMPDIR:-/tmp}/release-notes.XXXXXX")"
+  printf '%s\n' "$pr_body" >"$notes_file"
+  if ! gh pr edit "$pr_number" --body-file "$notes_file" >/dev/null; then
+    rm -f "$notes_file"
+    die "pushed the bump, but gh pr edit failed: paste the release notes into #$pr_number by hand"
+  fi
+  rm -f "$notes_file"
+  pr_url="$(gh pr view "$pr_number" --json url --jq .url 2>/dev/null || true)"
+  echo
+  info "pull request #$pr_number now releases $tag on merge"
+  info "get it approved and merge it: the release workflow publishes $tag, tags it and posts to Slack."
+  print_pr_url "$pr_url"
   exit 0
 fi
 
@@ -403,6 +567,7 @@ rm -f "$notes_file"
 git switch --quiet main
 
 echo
-info "opened $url"
+info "opened the release pull request"
 info "review it (edit the notes in the PR body if needed), get it approved and merge it:"
 info "the release workflow publishes $tag, tags it and posts to Slack."
+print_pr_url "$url"

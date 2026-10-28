@@ -397,12 +397,16 @@ for _, p := range open.Data {
 // Get (embeds transactions)
 p, _ := client.Payments.Get(ctx, rail0ID)
 
-// Update the description (requires JWT; payer or payee only, any status).
-// Returns the updated payment, same shape as Get. A nil Description is sent as
-// JSON null and, like "", clears it; max 255 characters (422 above that).
-desc := "Order #1234"
+// Update off-chain fields (requires JWT; payer or payee only, any status).
+// Returns the updated payment, same shape as Get. nil leaves a field alone, a
+// pointer to "" clears it. Description: either party, max 255 characters.
+// MerchantNote (the payee's internal note, never shown to the payer) and
+// Reference / ReferenceOrigin (the payment's id in the merchant's own system):
+// the payee only — 403 not_the_payee for the payer.
+desc, empty, ref := "Spring collection", "", "ORD-1042"
 p, _ = client.Payments.Update(ctx, rail0ID, rail0.UpdatePaymentRequest{Description: &desc})
-p, _ = client.Payments.Update(ctx, rail0ID, rail0.UpdatePaymentRequest{}) // clear
+p, _ = client.Payments.Update(ctx, rail0ID, rail0.UpdatePaymentRequest{Description: &empty}) // clear
+p, _ = client.Payments.Update(ctx, rail0ID, rail0.UpdatePaymentRequest{Reference: &ref})
 
 // Create — optional idempotency key replays the existing payment on retry.
 // The key is bound to the request: reusing it with different terms returns
@@ -579,6 +583,14 @@ me, err := client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
 // A pointer, so that false is a value and nil leaves it alone.
 off := false
 me, err = client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{PriorityTip: &off})
+
+// The payment windows of the account's NEW payments: a number of seconds, or back to the
+// gateway default (sent as null); nil leaves a window alone. me.PaymentWindows says which
+// are the account's own and the bounds (422 invalid_payment_windows outside them).
+me, err = client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
+    AuthorizationTTL: rail0.WindowSeconds(2 * 86400),
+    RefundTTL:        rail0.WindowDefault(),
+})
 ```
 
 `Update` edits only the holder's own profile. Name and email are each unique across
@@ -1087,6 +1099,15 @@ A release is an approved pull request: merging it is what tags the module.
    It then bumps `Version` in `version.go`, writes the release notes
    from the pull requests merged since the last tag, and opens `chore(release): vX.Y.Z`.
    `--dry-run` prints all of it and writes nothing.
+
+   **Or on a feature branch**, to release a change in the same review: run it on a clean
+   branch that is pushed, contains `origin/main` and has an open pull request into `main`.
+   The bump is committed and pushed on that branch (`chore(release): vX.Y.Z`), the pull
+   request's own title counts toward the version and gets a line in the notes, and the
+   notes go into its description between `<!-- release:start -->` markers — the text above
+   them is kept. Re-run it after new commits or a merge of `main`: it refreshes the version
+   and the notes instead of bumping twice. One approval then covers the change and its
+   release.
 2. Review the pull request (edit the notes in its body if needed), approve and merge it.
    The approval must come from a reviewer **other than the pull request's author**, on its
    final commit: release.yml checks it before publishing anything and stops otherwise —
