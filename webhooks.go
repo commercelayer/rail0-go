@@ -248,6 +248,20 @@ func (s *WebhooksService) ResetCircuit(ctx context.Context, id string) (*Webhook
 	return s.putAction(ctx, id, "reset_circuit")
 }
 
+// Test sends a test event to the webhook's callback now and reports what the
+// endpoint did (POST /webhooks/{id}/test, requires JWT). The event has topic
+// "webhooks.test", "test": true and no payment, and is signed and delivered like a
+// real one. Synchronous, one attempt, not logged in the delivery log and not counted
+// by the circuit breaker; it works on a disabled webhook. A refusal by the endpoint
+// is a result, not an error: read Delivered.
+func (s *WebhooksService) Test(ctx context.Context, id string) (*WebhookTestResult, error) {
+	var out WebhookTestResult
+	if err := s.http.post(ctx, pathf("/webhooks/%s/test", id), struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // putAction issues PUT /webhooks/{id}/{action} for the no-body state-transition
 // endpoints (enable, disable, rotate_secret, reset_circuit).
 func (s *WebhooksService) putAction(ctx context.Context, id, action string) (*Webhook, error) {

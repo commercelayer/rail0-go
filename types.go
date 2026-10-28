@@ -15,17 +15,34 @@ type CreatePaymentRequest struct {
 	Payee       Address `json:"payee"`
 	Description string  `json:"description,omitempty"`
 	Metadata    *any    `json:"metadata,omitempty"`
+	// Reference is this payment's identifier in the merchant's own system (e.g. an
+	// order, invoice or cart id there), at most 128 characters; not unique, and an
+	// idempotency term. ReferenceOrigin names that system: a lowercase slug
+	// (a-z, 0-9, . _ -), e.g. "commercelayer"; it needs a Reference.
+	Reference       string `json:"reference,omitempty"`
+	ReferenceOrigin string `json:"reference_origin,omitempty"`
 }
 
-// UpdatePaymentRequest is the body for PATCH /payments/{id}. Description is the
-// only mutable field.
+// UpdatePaymentRequest is the body for PATCH /payments/{id}. Every field is a
+// pointer: nil leaves it untouched (not sent), a pointer to "" clears it, any other
+// value replaces it. At least one must be set (400 otherwise). Off-chain only.
 //
-// The key is required by the gateway, so the field has no omitempty: a nil
-// Description is sent as JSON null and, like a pointer to "", clears the stored
-// description. A non-empty value replaces it (max 255 characters — the gateway
-// answers 422 above that).
+//   - Description: either party, max 255 characters.
+//   - MerchantNote: the PAYEE's internal note, max 2000 characters — never shown to
+//     the payer, not in webhooks.
+//   - Reference / ReferenceOrigin: the payment's identifier in the merchant's own
+//     system and which system; the payee corrects them. Clearing the reference clears
+//     its origin.
+//
+// The last three are the payee's: the payer gets 403 not_the_payee.
+//
+// Before this release Description had no omitempty and a nil one cleared it;
+// now nil means "leave it", so pass a pointer to "" to clear.
 type UpdatePaymentRequest struct {
-	Description *string `json:"description"`
+	Description     *string `json:"description,omitempty"`
+	MerchantNote    *string `json:"merchant_note,omitempty"`
+	Reference       *string `json:"reference,omitempty"`
+	ReferenceOrigin *string `json:"reference_origin,omitempty"`
 }
 
 // PayerSignatureRequest is the body for PUT /payments/{id}/sign.

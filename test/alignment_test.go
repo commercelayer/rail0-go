@@ -82,15 +82,18 @@ func TestPaymentsGet(t *testing.T) {
 }
 
 func TestPaymentsUpdate(t *testing.T) {
-	desc := "x"
+	desc, empty, note, ref := "x", "", "agreed by email", "ORD-2"
 	cases := []struct {
 		name string
 		req  rail0.UpdatePaymentRequest
 		want string
 	}{
 		{"set", rail0.UpdatePaymentRequest{Description: &desc}, `{"description":"x"}`},
-		// nil must still send the key, as null: the gateway requires it and null clears.
-		{"clear", rail0.UpdatePaymentRequest{}, `{"description":null}`},
+		// A pointer to "" clears; the gateway reads a blank value as "clear it".
+		{"clear", rail0.UpdatePaymentRequest{Description: &empty}, `{"description":""}`},
+		// nil leaves a field untouched: only what is set reaches the wire.
+		{"note and reference", rail0.UpdatePaymentRequest{MerchantNote: &note, Reference: &ref},
+			`{"merchant_note":"agreed by email","reference":"ORD-2"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
