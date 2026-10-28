@@ -249,18 +249,21 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-            "text": "rail0 SDK for Go ${{ needs.plan.outputs.version }} released (github.com/commercelayer/rail0-go)",
+            "text": "New release for rail0 SDK for Go (${{ needs.plan.outputs.tag }})",
             "blocks": [
-              {
-              "type": "header",
-              "text": { "type": "plain_text", "text": ":gear: rail0 SDK for Go ${{ needs.plan.outputs.version }} released", "emoji": true }
-              },
               {
               "type": "section",
               "text": {
                 "type": "mrkdwn",
-                "text": "`github.com/commercelayer/rail0-go` on <${{ github.event.repository.private && format('{0}/{1}/releases/tag/{2}', github.server_url, github.repository, needs.plan.outputs.tag) || format('https://pkg.go.dev/github.com/commercelayer/rail0-go@{0}', needs.plan.outputs.tag) }}|${{ github.event.repository.private && 'GitHub' || 'pkg.go.dev' }}> · <${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.tag }}|release notes>"
+                "text": ":gear: New release for <${{ github.event.repository.private && format('{0}/{1}/releases/tag/{2}', github.server_url, github.repository, needs.plan.outputs.tag) || format('https://pkg.go.dev/github.com/commercelayer/rail0-go@{0}', needs.plan.outputs.tag) }}|rail0 SDK for Go>\n<${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.tag }}|release notes>"
               }
+              },
+              {
+              "type": "section",
+              "fields": [
+                { "type": "mrkdwn", "text": "*Project:*\ngithub.com/commercelayer/rail0-go" },
+                { "type": "mrkdwn", "text": "*Version:*\n${{ needs.plan.outputs.tag }}" }
+              ]
               },
               {
               "type": "context",
