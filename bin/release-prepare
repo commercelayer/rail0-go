@@ -293,6 +293,10 @@ list_merged_prs() {
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# A branch-mode pull request's title ends in " (release vX.Y.Z)" (see below): left out of
+# the notes and of the type parsing, and replaced rather than repeated on a re-run.
+strip_release_suffix() { printf '%s' "$1" | sed -E 's/ \(release v[0-9]+\.[0-9]+\.[0-9]+\)$//'; }
+
 bump_rank() { case "$1" in major) echo 3 ;; minor) echo 2 ;; patch) echo 1 ;; *) echo 0 ;; esac; }
 
 added="" changed="" fixed="" removed=""
@@ -311,6 +315,7 @@ if [ "$mode" = branch ]; then
   prs="${prs}"$'\n'"${pr_number}"$'\037'"${pr_title_now}"$'\037'"${pr_breaking}"
 fi
 while IFS=$'\037' read -r number title body_breaking; do
+  title="$(strip_release_suffix "$title")"
   [ -n "$title" ] || continue
   case "$title" in "chore(release):"*) continue ;; esac
   type="" scope="" breaking="" subject="$title"
@@ -394,6 +399,9 @@ compare=""
 [ -n "$last_tag" ] && compare="**Full diff:** https://github.com/${REPO_SLUG}/compare/${last_tag}...${tag}"$'\n'
 
 pr_title="chore(release): $tag"
+# On a branch the pull request keeps its own title — its type decides the bump — and says
+# that it releases: " (release vX.Y.Z)" at the end, replacing an earlier run's suffix.
+[ "$mode" = branch ] && pr_title="$(strip_release_suffix "$pr_title_now") (release $tag)"
 if [ "$mode" = branch ]; then
   merge_line="Merging this pull request also releases **${tag}**: its changes and the version bump
 ship together, under the one approval."
@@ -443,6 +451,7 @@ if [ "$dry_run" = 1 ] && [ "$mode" = branch ]; then
   if [ "$bump_source" = computed ]; then echo "  bump:     $bump (computed)"; else echo "  bump:     manual (computed: ${bump:-none})"; fi
   echo "  files:    $VERSION_FILES"
   echo "  commit:   chore(release): $tag (on $branch)"
+  echo "  PR title: $pr_title"
   echo
   echo "----- PR body -----"
   printf '%s\n' "$pr_body"
@@ -506,7 +515,7 @@ if [ "$mode" = branch ]; then
 
   notes_file="$(mktemp "${TMPDIR:-/tmp}/release-notes.XXXXXX")"
   printf '%s\n' "$pr_body" >"$notes_file"
-  if ! gh pr edit "$pr_number" --body-file "$notes_file" >/dev/null; then
+  if ! gh pr edit "$pr_number" --title "$pr_title" --body-file "$notes_file" >/dev/null; then
     rm -f "$notes_file"
     die "pushed the bump, but gh pr edit failed: paste the release notes into #$pr_number by hand"
   fi

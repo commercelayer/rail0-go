@@ -1103,7 +1103,8 @@ A release is an approved pull request: merging it is what tags the module.
    **Or on a feature branch**, to release a change in the same review: run it on a clean
    branch that is pushed, contains `origin/main` and has an open pull request into `main`.
    The bump is committed and pushed on that branch (`chore(release): vX.Y.Z`), the pull
-   request's own title counts toward the version and gets a line in the notes, and the
+   request's own title counts toward the version, gets a line in the notes and gains a
+   ` (release vX.Y.Z)` suffix, and the
    notes go into its description between `<!-- release:start -->` markers — the text above
    them is kept. Re-run it after new commits or a merge of `main`: it refreshes the version
    and the notes instead of bumping twice. One approval then covers the change and its

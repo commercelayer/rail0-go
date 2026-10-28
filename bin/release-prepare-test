@@ -54,7 +54,11 @@ case "$1 ${2:-}" in
       *) exit 1 ;;
     esac ;;
   "pr edit")
-    while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$FAKE_PR_EDITED"; shift; done ;;
+    while [ $# -gt 0 ]; do
+      [ "$1" = --body-file ] && cp "$2" "$FAKE_PR_EDITED"
+      [ "$1" = --title ] && printf '%s\n' "$2" >"$FAKE_PR_EDITED.title"
+      shift
+    done ;;
   *) exit 1 ;;
 esac
 EOF
@@ -250,12 +254,16 @@ expect_contains "branch: the description keeps its text" "$edited" "Adds the new
 expect_contains "branch: the notes are in the description" "$edited" "<!-- release-notes:start -->"
 expect_contains "branch: main's fix is in the notes too" "$edited" "something on main (#43)"
 [ -z "$(git tag -l "v$bminor")" ] && pass "branch: no tag created" || fail "branch: a tag was created"
+expect_contains "branch: the title says it releases" "$(cat "$FAKE_PR_EDITED.title")" "feat(x): a new thing (release v$bminor)"
 
 # A second run replaces the block instead of adding one, and does not bump again.
-FAKE_PR_BODY="$edited"
+FAKE_PR_BODY="$edited" FAKE_PR_TITLE="$(cat "$FAKE_PR_EDITED.title")"
 out="$(run)"
 expect_contains "branch: re-run leaves the version alone" "$out" "already carries $bminor"
 edited="$(cat "$FAKE_PR_EDITED")"
+[ "$(cat "$FAKE_PR_EDITED.title")" = "feat(x): a new thing (release v$bminor)" ] &&
+  pass "branch: re-run replaces the title suffix" || fail "branch: title is '$(cat "$FAKE_PR_EDITED.title")'"
+expect_absent "branch: the suffix stays out of the notes" "$edited" "(release v$bminor) (#42)"
 [ "$(printf '%s\n' "$edited" | grep -c '<!-- release:start -->')" = 1 ] &&
   pass "branch: re-run keeps one release block" || fail "branch: release block duplicated"
 [ "$(git log -1 --format=%s origin/feature)" = "chore(release): v$bminor" ] &&
