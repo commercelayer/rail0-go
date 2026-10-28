@@ -261,7 +261,7 @@ jobs:
               {
               "type": "section",
               "fields": [
-                { "type": "mrkdwn", "text": "*Project:*\ngithub.com/commercelayer/rail0-go" },
+                { "type": "mrkdwn", "text": "*Project:*\n<${{ github.server_url }}/${{ github.repository }}|${{ github.event.repository.name }}>" },
                 { "type": "mrkdwn", "text": "*Version:*\n${{ needs.plan.outputs.tag }}" }
               ]
               },
