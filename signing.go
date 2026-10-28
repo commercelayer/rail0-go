@@ -248,7 +248,7 @@ func doSign(privateKey []byte, digest []byte) (Eip3009Signature, error) {
 	}
 	privKey := secp.PrivKeyFromBytes(privateKey)
 	// isCompressedKey=false → first byte is 27 or 28 (Ethereum v convention).
-	// SignCompact normalises S to the lower half of the curve order (low-S).
+	// SignCompact normalizes S to the lower half of the curve order (low-S).
 	compact := ecdsa.SignCompact(privKey, digest, false)
 	// compact layout: [v(1), r(32), s(32)]
 	v := int(compact[0])

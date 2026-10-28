@@ -109,7 +109,7 @@ func VerifyWebhookSignature(secret, body, timestamp, signature string) bool {
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	// The timestamp is signed exactly as it arrived on the wire — the gateway keys
-	// the digest with that same string, so a normalised copy would not match.
+	// the digest with that same string, so a normalized copy would not match.
 	mac.Write([]byte(timestamp + "." + body))
 	return hmac.Equal(mac.Sum(nil), got)
 }
