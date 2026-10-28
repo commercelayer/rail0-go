@@ -34,13 +34,27 @@ expect_absent() {
 }
 
 # Stubs. `gh` is signed in, cannot see a GitHub repo (so the notes come from git, as
-# they do without gh), and "opens" a pull request by printing a URL.
+# they do without gh), and "opens" a pull request by printing a URL. For the branch mode
+# it knows one pull request when FAKE_PR is set ("NUMBER<TAB>STATE<TAB>BASE"), answers its
+# title and body from FAKE_PR_TITLE / FAKE_PR_BODY, and `pr edit` saves the new body to
+# $FAKE_PR_EDITED.
 mkdir -p "$TMP/stubs"
 cat >"$TMP/stubs/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$1 ${2:-}" in
   "auth status") exit 0 ;;
   "pr create") echo "https://github.com/example/repo/pull/99" ;;
+  "pr view")
+    [ -n "${FAKE_PR:-}" ] || exit 1
+    case "$*" in
+      *number,state,baseRefName*) printf '%s\n' "$FAKE_PR" ;;
+      *"--json title"*) printf '%s\n' "$FAKE_PR_TITLE" ;;
+      *"--json body"*) printf '%s\n' "$FAKE_PR_BODY" ;;
+      *"--json url"*) echo "https://github.com/example/repo/pull/42" ;;
+      *) exit 1 ;;
+    esac ;;
+  "pr edit")
+    while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$FAKE_PR_EDITED"; shift; done ;;
   *) exit 1 ;;
 esac
 EOF
@@ -123,7 +137,7 @@ expect_contains "refuses a dirty tree" "$(run --dry-run || true)" "not clean"
 rm dirt.txt
 
 git switch --quiet -c topic
-expect_contains "refuses a branch other than main" "$(run --dry-run || true)" "run this on main"
+expect_contains "a branch must be on origin" "$(run --dry-run || true)" "is not on origin"
 expect_contains "test override works with --dry-run" \
   "$(RELEASE_PREPARE_SKIP_GIT_CHECKS=1 run --dry-run)" "-> v$major"
 expect_contains "test override refused without --dry-run" \
@@ -140,7 +154,8 @@ git push --quiet origin --delete "chore/release-$major"
 
 # A real run, against the stubbed gh.
 out="$(run)"
-expect_contains "real run opens the PR" "$out" "opened https://github.com/example/repo/pull/99"
+expect_contains "real run opens the PR" "$out" "opened the release pull request"
+expect_contains "and ends with its URL" "$(printf '%s\n' "$out" | tail -n 1)" "https://github.com/example/repo/pull/99"
 [ "$(git symbolic-ref --short HEAD)" = main ] && pass "back on main" || fail "not back on main"
 if git ls-remote --exit-code --heads origin "chore/release-$major" >/dev/null; then
   pass "release branch pushed"
@@ -192,6 +207,65 @@ expect_contains "and marks the note as breaking" "$out" "new signing flow **(bre
 retag "v$((x + 2)).0.0"
 expect_contains "refuses when nothing merged" "$(run --dry-run || true)" "nothing merged since"
 expect_contains "unless a version is forced" "$(run patch --dry-run)" "-> v$((x + 2)).0.1"
+
+# --- branch mode: the branch's own pull request carries the release -------------------
+retag "v$((x + 2)).0.1"
+git switch --quiet -c feature
+echo feature >>changes.txt && git add changes.txt && git commit --quiet -m "work on the feature"
+expect_contains "branch: refuses without its pull request" "$(run --dry-run || true)" "is not on origin"
+git push --quiet -u origin feature
+expect_contains "branch: refuses without an open pull request" "$(run --dry-run || true)" "has no pull request"
+export FAKE_PR=$'42\tOPEN\tmain' FAKE_PR_TITLE="feat(x): a new thing" FAKE_PR_EDITED="$TMP/edited.md"
+export FAKE_PR_BODY=$'Adds the new thing.\n\nDetails here.'
+# The latest tag is v(x+2).0.1 (retagged above): a feat on top of it is (x+2).1.0.
+bx=$((x + 2))
+bminor="$bx.1.0"
+out="$(run --dry-run)"
+expect_contains "branch: dry run says the mode" "$out" "mode:     branch (feature, pull request #42)"
+expect_contains "branch: its own feat makes it minor" "$out" "-> v$bminor"
+expect_contains "branch: its own title is in the notes" "$out" "- **x:** a new thing (#42)"
+expect_contains "branch: the description is kept" "$out" "Adds the new thing."
+expect_contains "branch: the release block is marked" "$out" "<!-- release:start -->"
+
+FAKE_PR_BODY=$'Removes the old thing.\n\nBREAKING CHANGE: the old thing is gone' \
+  expect_contains "branch: a BREAKING CHANGE footer in its description makes it major" \
+  "$(FAKE_PR_BODY=$'Removes the old thing.\n\nBREAKING CHANGE: the old thing is gone' run --dry-run)" "-> v$((bx + 1)).0.0"
+
+git switch --quiet main
+git commit --quiet --allow-empty -m "fix: something on main (#43)" && git push --quiet origin main
+git switch --quiet feature
+expect_contains "branch: refuses a branch behind main" "$(run --dry-run || true)" "does not contain origin/main"
+git merge --quiet --no-edit origin/main && git push --quiet origin feature
+
+out="$(run)"
+expect_contains "branch: real run updates the pull request" "$out" "pull request #42 now releases v$bminor"
+expect_contains "branch: and ends with its URL" "$(printf '%s\n' "$out" | tail -n 1)" "https://github.com/example/repo/pull/42"
+[ "$(git symbolic-ref --short HEAD)" = feature ] && pass "branch: stays on the branch" || fail "branch: left the branch"
+git fetch --quiet origin feature
+subject="$(git log -1 --format=%s origin/feature)"
+[ "$subject" = "chore(release): v$bminor" ] && pass "branch: bump committed and pushed on the branch" ||
+  fail "branch: last commit on origin/feature is '$subject'"
+edited="$(cat "$FAKE_PR_EDITED" 2>/dev/null || true)"
+expect_contains "branch: the description keeps its text" "$edited" "Adds the new thing."
+expect_contains "branch: the notes are in the description" "$edited" "<!-- release-notes:start -->"
+expect_contains "branch: main's fix is in the notes too" "$edited" "something on main (#43)"
+[ -z "$(git tag -l "v$bminor")" ] && pass "branch: no tag created" || fail "branch: a tag was created"
+
+# A second run replaces the block instead of adding one, and does not bump again.
+FAKE_PR_BODY="$edited"
+out="$(run)"
+expect_contains "branch: re-run leaves the version alone" "$out" "already carries $bminor"
+edited="$(cat "$FAKE_PR_EDITED")"
+[ "$(printf '%s\n' "$edited" | grep -c '<!-- release:start -->')" = 1 ] &&
+  pass "branch: re-run keeps one release block" || fail "branch: release block duplicated"
+[ "$(git log -1 --format=%s origin/feature)" = "chore(release): v$bminor" ] &&
+  [ "$(git rev-list --count origin/main..origin/feature)" -le 4 ] &&
+  pass "branch: re-run adds no commit" || fail "branch: re-run committed again"
+
+FAKE_PR=$'42\tCLOSED\tmain' expect_contains "branch: refuses a closed pull request" \
+  "$(FAKE_PR=$'42\tCLOSED\tmain' run --dry-run || true)" "is CLOSED, not open"
+unset FAKE_PR FAKE_PR_TITLE FAKE_PR_BODY FAKE_PR_EDITED
+git switch --quiet main
 
 echo
 if [ "$failures" -gt 0 ]; then

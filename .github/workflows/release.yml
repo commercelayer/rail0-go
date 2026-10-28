@@ -3,6 +3,8 @@
 # Releasing is three steps:
 #   1. bin/release-prepare opens "chore(release): vX.Y.Z", which bumps Version in
 #      version.go and carries the release notes in its body;
+#      Run on a feature branch instead, it bumps the version there and writes the notes
+#      into that branch's open pull request: one approval for the change and its release;
 #   2. a reviewer approves it and it is merged;
 #   3. this workflow, on that push to main: plan → gate (ci.yml on the release commit)
 #      → tag vX.Y.Z + GitHub release → Slack.
@@ -180,8 +182,12 @@ jobs:
         id: notes
         run: |
           set -euo pipefail
+          # The pull request the release commit came in with — a release-only one
+          # ("chore(release): vX.Y.Z", opened on main) or a feature one whose branch
+          # carried the bump (bin/release-prepare on a branch): the notes are between the
+          # same markers in either.
           number="$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/pulls" \
-            --jq '[.[] | select(.merged_at != null and (.title | startswith("chore(release)")) and (.title | contains(env.TAG)))][0].number // empty' || true)"
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty' || true)"
           if [ -z "$number" ]; then
             number="$(gh pr list --repo "$GITHUB_REPOSITORY" --state merged --search "\"chore(release): $TAG\" in:title" \
               --json number,title --jq '[.[] | select(.title | contains(env.TAG))][0].number // empty' || true)"
