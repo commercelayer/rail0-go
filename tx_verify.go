@@ -529,7 +529,7 @@ var eip712DomainFields = [][2]string{
 // charge on 1.1.0–1.3.x; no payment response carries the version, so both are accepted
 // and nothing else is.
 //
-// sp.Types is `any` (decoded JSON, or whatever a caller built), so it is normalised
+// sp.Types is `any` (decoded JSON, or whatever a caller built), so it is normalized
 // through JSON first: the comparison is on what a wallet would receive.
 func checkTypedData(sp *SigningPayload) error {
 	if sp.PrimaryType != PrimaryTypeTransfer && sp.PrimaryType != PrimaryTypeReceive {
