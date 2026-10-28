@@ -435,9 +435,9 @@ func parseRetryAfter(h http.Header) time.Duration {
 //
 // PathEscape leaves "." and ".." (and "") untouched, since they contain nothing to
 // escape; a segment that is exactly one of those would still move the request once a
-// server or proxy normalises dot segments or merges slashes. Those are rejected, not
+// server or proxy normalizes dot segments or merges slashes. Those are rejected, not
 // escaped, by checkPathSegments before any request is sent — %2E is decoded back to "."
-// by the normalising layers this guards against, so escaping would not be a guarantee.
+// by the normalizing layers this guards against, so escaping would not be a guarantee.
 //
 // Query strings are NOT built here: they come from url.Values.Encode and are appended to
 // the result.
