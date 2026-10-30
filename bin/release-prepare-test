@@ -82,6 +82,14 @@ for f in $FILES; do
   mkdir -p "$(dirname "$f")"
   cp "$ROOT/$f" "$f"
 done
+# A pull request may require a PSEUDO-version of an unreleased rail0-go branch (ci.yml
+# builds it); a real run refuses one by design, and that refusal is not what these tests
+# exercise — so the fixture's go.mod requires a tag. A no-op without a go.mod, or with a
+# tagged requirement.
+if [ -f go.mod ]; then
+  sed -E 's#(github\.com/commercelayer/rail0-go) v[^[:space:]]+-([0-9]+\.)?[0-9]{14}-[0-9a-f]{12}#\1 v1.0.0#' go.mod >go.mod.tmp
+  mv go.mod.tmp go.mod
+fi
 git add -A
 git commit --quiet -m "initial"
 git push --quiet origin main
