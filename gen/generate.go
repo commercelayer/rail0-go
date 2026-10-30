@@ -191,6 +191,23 @@ var schemaTypeOverride = map[string]map[string]string{
 	"EventCallback": {
 		"response_code": "*int",
 	},
+	"Payout": {
+		"amount":       "Uint256String",
+		"token":        "Address",
+		"address":      "Address",
+		"sender":       "Address",
+		"block_number": "*int",
+	},
+	"PayoutDestination": {
+		"token":   "Address",
+		"address": "Address",
+		// Nullable (best effort, eth_getCode): a pointer keeps "not checked" apart
+		// from a real "no code".
+		"has_code":          "*bool",
+		"reserve_amount":    "Uint256String",
+		"min_amount":        "Uint256String",
+		"suggested_reserve": "Uint256String",
+	},
 	"Token": {
 		"address": "Address",
 	},
@@ -265,6 +282,11 @@ var skipSchemas = map[string]bool{
 	"Account":        true,
 	"PaymentWindows": true,
 	"AdminContract":  true,
+	// Admin-only too: the open-exposure read before deactivating an account
+	// (GET /admin/accounts/{id}/exposure) and the account stub embedded in the
+	// operator's cross-account payout listings. Neither reaches a merchant route.
+	"AccountExposure": true,
+	"AccountSummary":  true,
 }
 
 // ================================================================
