@@ -652,6 +652,7 @@ explicit agreement:
 > the venue's minimum, may be permanently lost and cannot be recovered by rail0.
 
 ```go
+minAmount := rail0.Uint256String("11000000") // from the venue's deposit page
 dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestinationRequest{
     WalletID:       walletID,              // the session's own wallet (uuid or address)
     ChainID:        5042002,               // the network the venue issued the address for
@@ -659,11 +660,20 @@ dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestination
     Address:        "0x…",                 // the venue's deposit address
     Label:          "Kraken EUR",
     Kind:           rail0.PayoutDestinationKindExchange,
-    MinAmount:      "11000000",            // the venue's deposit minimum, base units (optional)
+    MinAmount:      &minAmount,            // the venue's deposit minimum, base units — or NoMinimum: true
     ConfirmDetails: merchantConfirmed,     // true only after the merchant accepted the text above
 })
 // dest.Status == "unverified"
 ```
+
+The venue's minimum deposit is a **required answer**: either `MinAmount` (base units, read
+from its deposit page; `"0"` is a figure like any other) or `NoMinimum: true` when the
+venue has none — exactly one, and the SDK never picks for you. `Create` checks it before
+any request: neither, or a `MinAmount` pointing to `""`, returns
+`rail0.ErrPayoutMinimumRequired` (gateway `422 minimum_required`); both returns
+`rail0.ErrPayoutMinimumConflict` (`422 minimum_conflict`). The destination reports it as
+`MinAmount` / `NoMinimum`; both empty means a destination registered before the minimum
+was asked, which still works and can be completed with `Update`.
 
 ### 2. Prove the address, then confirm it
 
@@ -747,7 +757,9 @@ label := "Kraken EUR (main)"
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Label: &label})
 
 // Changing the minimum needs the same confirmation; raising it above the latest proof
-// takes the verification away (send a new proof at the new minimum).
+// takes the verification away (send a new proof at the new minimum). NoMinimum: true
+// removes the minimum; "" is refused (ErrPayoutMinimumRequired), and MinAmount together
+// with NoMinimum is ErrPayoutMinimumConflict, both before any request.
 minimum := rail0.Uint256String("15000000")
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{
     MinAmount: &minimum, ConfirmDetails: merchantConfirmed,

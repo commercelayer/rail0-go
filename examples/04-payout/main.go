@@ -47,6 +47,8 @@ func main() {
 		log.Fatal("not confirmed: nothing registered")
 	}
 
+	// The venue's minimum deposit is a required answer: a figure, or NoMinimum: true.
+	minAmount := rail0.Uint256String("11000000")
 	dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestinationRequest{
 		WalletID:       wallet,
 		ChainID:        5042002,                                      // the network the venue issued the address for
@@ -54,7 +56,7 @@ func main() {
 		Address:        "0xVenueDepositAddress0000000000000000000000",
 		Label:          "Exchange EUR",
 		Kind:           rail0.PayoutDestinationKindExchange,
-		MinAmount:      "11000000", // the venue's deposit minimum, base units (optional)
+		MinAmount:      &minAmount, // the venue's deposit minimum, base units — or NoMinimum: true when it has none
 		ConfirmDetails: confirmed,
 	})
 	if err != nil {

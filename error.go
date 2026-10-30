@@ -205,6 +205,8 @@ var errorHints = map[string]string{
 	"invalid_amount":                   "reserve_amount and min_amount are base units: digits only, below 2^120",
 	"unknown_chain":                    "the chain id is not one the gateway has active — see GET /blockchains",
 	"insufficient_balance":             "the wallet holds less than the payout (after the refund reserve) — the error detail names what is available",
+	"minimum_required":                 "state the venue's deposit minimum: min_amount in base units from its deposit page, or no_minimum: true when the venue has none — min_amount may not be blank",
+	"minimum_conflict":                 "send min_amount OR no_minimum: true, not both",
 	"payout_below_minimum":             "the amount is below the destination's minimum deposit — send at least min_amount, or prepare again if the minimum was raised after this payout was prepared",
 	"payout_destination_unverified":    "the destination is not verified yet — send the proof (purpose proof), wait for the venue to credit it, then confirm the destination",
 	"payout_destination_disabled":      "the destination is disabled — re-enable it (Update with Active=true) or use another one",
