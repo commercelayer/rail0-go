@@ -659,11 +659,18 @@ dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestination
     Address:        "0x…",                 // the venue's deposit address
     Label:          "Kraken EUR",
     Kind:           rail0.PayoutDestinationKindExchange,
-    MinAmount:      "11000000",            // the venue's deposit minimum, base units (optional)
+    MinAmount:      "11000000",            // REQUIRED: the venue's deposit minimum, base units ("0" = none)
     ConfirmDetails: merchantConfirmed,     // true only after the merchant accepted the text above
 })
 // dest.Status == "unverified"
 ```
+
+`MinAmount` is **required**: the venue's deposit minimum in base units, read from its
+deposit page, `"0"` when the venue has none. The SDK never fills it in — `Create`
+returns `rail0.ErrPayoutMinimumRequired` before any request when it is empty (the gateway
+answers `422 minimum_required`). A destination registered before the minimum was
+required may have none stated: it sends nothing (`payout_destination_minimum_unset` at
+prepare and submit) until `Update` sets one.
 
 ### 2. Prove the address, then confirm it
 
@@ -747,7 +754,8 @@ label := "Kraken EUR (main)"
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Label: &label})
 
 // Changing the minimum needs the same confirmation; raising it above the latest proof
-// takes the verification away (send a new proof at the new minimum).
+// takes the verification away (send a new proof at the new minimum). "0" removes the
+// minimum; "" is refused (ErrPayoutMinimumRequired, before any request).
 minimum := rail0.Uint256String("15000000")
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{
     MinAmount: &minimum, ConfirmDetails: merchantConfirmed,

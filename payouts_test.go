@@ -3,6 +3,7 @@ package rail0
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -342,10 +343,21 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		}
 	}
 
-	_, err := c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest})
+	// No minimum stated: refused locally, nothing sent (never defaulted to "0").
+	if _, err := c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, ConfirmDetails: true}); !errors.Is(err, ErrPayoutMinimumRequired) {
+		t.Fatalf("create without MinAmount: err = %v, want ErrPayoutMinimumRequired", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("create without MinAmount must send nothing, sent %d request(s)", len(got))
+	}
+
+	_, err := c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, MinAmount: "0"})
 	must(err)
 	if v, present := got[0].body["confirm_details"]; !present || v != false {
 		t.Errorf("create without confirmation must SEND confirm_details=false (never default it): %s", got[0].raw)
+	}
+	if v, present := got[0].body["min_amount"]; !present || v != "0" {
+		t.Errorf(`create with MinAmount "0" must SEND min_amount "0" (the venue has no minimum): %s`, got[0].raw)
 	}
 	_, err = c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, MinAmount: "11000000", ConfirmDetails: true})
 	must(err)
@@ -359,10 +371,17 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 	if got[2].method != http.MethodPatch || got[2].raw != `{"label":"Kraken"}` {
 		t.Errorf("label-only update = %s %s", got[2].method, got[2].raw)
 	}
-	minimum := Uint256String("")
+	blank := Uint256String("")
+	if _, err := c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{MinAmount: &blank, ConfirmDetails: true}); !errors.Is(err, ErrPayoutMinimumRequired) {
+		t.Fatalf(`update with MinAmount "": err = %v, want ErrPayoutMinimumRequired`, err)
+	}
+	if len(got) != 3 {
+		t.Fatalf(`update with MinAmount "" must send nothing, %d requests so far`, len(got))
+	}
+	minimum := Uint256String("0") // "0" removes the minimum
 	_, err = c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{MinAmount: &minimum, ConfirmDetails: true})
 	must(err)
-	if got[3].raw != `{"min_amount":"","confirm_details":true}` {
+	if got[3].raw != `{"min_amount":"0","confirm_details":true}` {
 		t.Errorf("minimum update = %s", got[3].raw)
 	}
 
@@ -441,7 +460,7 @@ func TestPayoutWebhookTopicsAndHints(t *testing.T) {
 		"confirmation_required", "payout_below_minimum", "payout_destination_unverified", "payout_destination_disabled",
 		"payout_destination_proof_missing", "payout_already_signed", "payout_not_pending", "payout_not_signed",
 		"payout_hash_in_use", "payout_limit_reached", "insufficient_balance", "account_deactivated",
-		"foreign_transfer_hash", "transaction_mismatch",
+		"foreign_transfer_hash", "transaction_mismatch", "minimum_required", "payout_destination_minimum_unset",
 	} {
 		if DescribeError(code) == "" {
 			t.Errorf("no hint for %s", code)

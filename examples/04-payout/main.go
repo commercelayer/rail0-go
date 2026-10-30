@@ -54,7 +54,7 @@ func main() {
 		Address:        "0xVenueDepositAddress0000000000000000000000",
 		Label:          "Exchange EUR",
 		Kind:           rail0.PayoutDestinationKindExchange,
-		MinAmount:      "11000000", // the venue's deposit minimum, base units (optional)
+		MinAmount:      "11000000", // REQUIRED: the venue's deposit minimum, base units ("0" = none)
 		ConfirmDetails: confirmed,
 	})
 	if err != nil {
