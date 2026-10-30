@@ -17,7 +17,7 @@
 //     from the enum schemas' x-enum-descriptions / x-enum-bytes32 extensions.
 //
 // What it does NOT emit:
-//   - The client method files (accounts.go, payments.go, chains.go, tokens.go,
+//   - The client method files (accounts.go, payments.go, payouts.go, chains.go, tokens.go,
 //     auth.go, webhooks.go, health.go). Those are hand-maintained and aligned to
 //     the gateway API surface; the generator must never overwrite them.
 //

@@ -97,6 +97,8 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Accounts` | The merchant account's own profile: read and update (JWT) |
 | `client.Analytics` | Merchant sales analytics (JWT + account) |
 | `client.Webhooks` | Webhook subscription management (JWT) |
+| `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit (JWT) |
+| `client.Payouts` | Merchant cash-out transfers: prepare, verify, sign, submit (JWT) |
 
 Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
 
@@ -599,6 +601,150 @@ signed-in wallet answers `403` `account_deactivated` / `wallet_deactivated`. The
 account's `active` flag is an operator action and is not exposed by the SDK; `priority_tip`
 is the owner's (or an admin's) and never touches the buyer's dispute/close_dispute gas.
 
+## Payouts (JWT)
+
+A payout moves tokens from a merchant wallet to a deposit address at a venue of the
+merchant's own — an exchange account, Circle Mint, another wallet they control — where
+they turn it into fiat. The gateway does the on-chain leg and nothing else: it builds
+an unsigned ERC-20 `transfer(address,uint256)` from the wallet to a registered
+**destination**, and the merchant's key signs it. It never holds funds or keys and never
+talks to the venue.
+
+### 1. Register a destination — with the merchant's confirmation
+
+A destination is bound to **one chain and one token**: an EVM address is the same string
+on every chain, but a venue credits only the network it issued the address for. Create
+it with the address generated at the venue **with the network set to that chain**.
+
+The gateway refuses the request (`422 confirmation_required`) unless `ConfirmDetails`
+is `true`, and the SDK never sets it for you: it is the merchant's statement, recorded
+in the destination's audit trail, that they checked the details. Show them
+`rail0.PayoutDetailsConfirmationText` (version `details_v1`) and set it only on their
+explicit agreement:
+
+> I have checked the address, network, token and minimum deposit on the venue's deposit
+> page and confirm they are correct. Funds sent to a wrong address or network, or below
+> the venue's minimum, may be permanently lost and cannot be recovered by rail0.
+
+```go
+dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestinationRequest{
+    WalletID:       walletID,              // the session's own wallet (uuid or address)
+    ChainID:        5042002,               // the network the venue issued the address for
+    Token:          "0x3600000000000000000000000000000000000000",
+    Address:        "0x…",                 // the venue's deposit address
+    Label:          "Kraken EUR",
+    Kind:           rail0.PayoutDestinationKindExchange,
+    MinAmount:      "11000000",            // the venue's deposit minimum, base units (optional)
+    ConfirmDetails: merchantConfirmed,     // true only after the merchant accepted the text above
+})
+// dest.Status == "unverified"
+```
+
+### 2. Prove the address, then confirm it
+
+Until it is verified a destination takes the **proof** amount at most
+(`payout_destination_unverified`). The proof is 1 token unit by default, raised to the
+destination's minimum when that is higher. Once it is mined and the venue shows it
+credited, the merchant confirms — the one fact the gateway cannot see:
+
+```go
+proof, err := client.Payouts.PrepareAndSubmit(ctx, rail0.PreparePayoutRequest{
+    DestinationID: dest.ID,
+    Purpose:       rail0.PayoutPurposeProof,
+}, key)
+// …wait for proof.Status == "confirmed" (Payouts.Get, or the payouts.confirmed webhook)
+// and for the venue to credit it, then:
+dest, err = client.PayoutDestinations.Confirm(ctx, dest.ID) // now "verified"
+```
+
+### 3. Pay out: prepare → verify → sign → submit
+
+`Amount` is a human decimal (`"125.50"`), or `rail0.PayoutAmountAll` for the wallet's
+balance minus the **refund reserve** — the destination's `ReserveAmount`, or by default
+its `SuggestedReserve` (the refundable balance of the wallet's payments still inside
+their refund window: a refund pulls from the payee wallet, so an emptied wallet fails
+its next refund). A payout below the destination's `MinAmount` is refused
+(`payout_below_minimum`), at prepare and again at submit.
+
+```go
+// One call: prepare, verify the transfer, sign it with the key, submit (the gateway broadcasts).
+payout, err := client.Payouts.PrepareAndSubmit(ctx, rail0.PreparePayoutRequest{
+    DestinationID: dest.ID,
+    Amount:        "125.50",
+}, key)
+```
+
+Step by step — the same checks, for a signer that is not a local key or a wallet that
+broadcasts itself:
+
+```go
+payout, _ := client.Payouts.Prepare(ctx, rail0.PreparePayoutRequest{DestinationID: dest.ID, Amount: "125.50"})
+dest, _ := client.PayoutDestinations.Get(ctx, payout.DestinationID) // read it yourself
+want := rail0.PayoutTransferExpectationFor(dest, payout.Amount)    // or your own base units
+
+// Offline signing: verify + sign, then the gateway broadcasts.
+raw, err := rail0.SignPayoutTransfer(payout.UnsignedTransaction, key, want)
+payout, err = client.Payouts.Submit(ctx, payout.ID, raw)
+
+// Or: verify, sign and broadcast with your own wallet, then report the hash.
+if err := rail0.VerifyPayoutTransfer(payout.UnsignedTransaction, walletAddress, want); err != nil { … }
+payout, err = client.Payouts.Submitted(ctx, payout.ID, txHash)
+```
+
+**What `VerifyPayoutTransfer` checks.** The payout's `unsigned_transaction` is not a RAIL0
+call but a plain ERC-20 transfer, so signed blindly it could send the wallet's balance
+anywhere. Before the key touches it, the transaction must be **exactly**: value 0;
+`chain_id` = the destination's chain; `from` (when present) = the signing key; `to` = the
+token contract; calldata = `0xa9059cbb` + the destination address (a clean left-padded
+word) + the amount — 68 bytes, nothing trailing. Every expectation field is required
+(fail-closed). `SignAndSubmit` / `PrepareAndSubmit` read the destination **again** rather
+than trusting the prepare response, and `PrepareAndSubmit` also holds a decimal `Amount`
+to the base units it scales from the public token catalog. A refusal is an error starting
+`rail0: refusing to sign:` and no signature exists.
+
+### After the submit
+
+- A node refusal is a `502` (`insufficient_gas_funds`, …): the payout stays `pending`
+  but **signed** — `client.Payouts.Resend(ctx, id)` re-broadcasts the same bytes (same
+  nonce, so it can be mined once at most). A signed payout cannot be re-prepared or
+  cancelled (`payout_already_signed`).
+- `client.Payouts.Cancel(ctx, id)` fails an unsigned pending payout (`error_code`
+  `cancelled`), freeing the destination for a new prepare.
+- A wallet that sped up or replaced its transaction reports the new hash with
+  `Submitted`, even after the payout failed `submission_timeout` or `dropped`.
+- One pending payout per destination; at most 10 payouts per wallet per hour
+  (`payout_limit_reached`).
+
+### Editing a destination, lists and audit trail
+
+```go
+label := "Kraken EUR (main)"
+dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Label: &label})
+
+// Changing the minimum needs the same confirmation; raising it above the latest proof
+// takes the verification away (send a new proof at the new minimum).
+minimum := rail0.Uint256String("15000000")
+dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{
+    MinAmount: &minimum, ConfirmDetails: merchantConfirmed,
+})
+
+off := false // any wallet of the account may disable; only the destination's own re-enables
+dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Active: &off})
+
+dests, _ := client.PayoutDestinations.List(ctx, rail0.ListPayoutDestinationsParams{Status: "verified"})
+page, _ := client.Payouts.List(ctx, rail0.ListPayoutsParams{
+    DestinationID: dest.ID,
+    Statuses:      []string{rail0.PayoutStatusPending, rail0.PayoutStatusSubmitted},
+})
+events, _ := client.PayoutDestinations.Events(ctx, dest.ID) // the destination's and its payouts', newest first
+events, _ = client.Payouts.Events(ctx, payout.ID)
+```
+
+Lists page like `Payments.List` (see [Pagination](#pagination)). A deactivated account
+is read-only for payouts: every write is `403 account_deactivated`. Webhooks:
+`rail0.TopicPayoutsConfirmed`, `rail0.TopicPayoutsFailed` (every failure; `error_code`
+says which) and `rail0.TopicPayoutDestinationsVerified`.
+
 ## Analytics (JWT + account)
 
 Merchant sales analytics, scoped to the authenticated **account**'s own wallets as
@@ -740,9 +886,10 @@ sig, err = rail0.SignSigningPayloadFor(phase1.SigningPayload, payeeKey, want)
 ```
 
 Signing helpers: `HexToPrivateKey`, **`SignTransactionFor`**, **`SignSigningPayloadFor`**,
+**`SignPayoutTransfer`** (see [Payouts](#payouts-jwt)),
 `PayloadExpectationFor`, `PackSignature`, `SignTransferWithAuthorization`,
-`SignReceiveWithAuthorizationRaw`; `VerifyUnsignedTransaction`, `VerifySigningPayload`
-and `SignerAddress` run the pre-sign checks on their own, for a signer that is not a
+`SignReceiveWithAuthorizationRaw`; `VerifyUnsignedTransaction`, `VerifySigningPayload`,
+`VerifyPayoutTransfer` and `SignerAddress` run the pre-sign checks on their own, for a signer that is not a
 local key (a KMS, a hardware wallet, `eth_signTypedData_v4` in a browser wallet).
 
 **What `SignSigningPayloadFor` verifies, and why.** An EIP-3009 authorization is the
