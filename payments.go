@@ -61,6 +61,12 @@ type ListPaymentsParams struct {
 	Sort            string   // sort fields: comma-separated, prefix with - for desc
 	Page            int      // page number (1-based); 0 = use server default
 	PerPage         int      // items per page; 0 = use server default
+	// After switches to cursor paging: the Meta.NextCursor of the previous page ("" =
+	// offset paging, as before). It walks by -created_at with no total count, at a
+	// constant cost per page; Page, and any Sort other than "-created_at", are refused
+	// beside it (422 invalid_cursor). Start a cursor walk with an empty After and read
+	// Meta.NextCursor from that first page; it is empty on the last page.
+	After string
 }
 
 // List returns payments for the authenticated account (requires JWT). The
@@ -138,6 +144,9 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 		if p.PerPage > 0 {
 			q.Set("per_page", strconv.Itoa(p.PerPage))
 		}
+		if p.After != "" {
+			q.Set("after", p.After)
+		}
 		if len(q) > 0 {
 			path = path + "?" + q.Encode()
 		}
@@ -154,13 +163,32 @@ func (s *PaymentsService) List(ctx context.Context, params ...ListPaymentsParams
 // headers on collection endpoints (bare-array body).
 func pageMetaFromHeaders(h http.Header) PageMeta {
 	atoi := func(s string) int { n, _ := strconv.Atoi(s); return n }
+	links := parseLinkHeader(h.Get("Link"))
 	return PageMeta{
 		Page:       atoi(h.Get("X-Page")),
 		PerPage:    atoi(h.Get("X-Per-Page")),
 		Total:      atoi(h.Get("X-Total-Count")),
 		TotalPages: atoi(h.Get("X-Total-Pages")),
-		Links:      parseLinkHeader(h.Get("Link")),
+		Links:      links,
+		NextCursor: nextCursor(h.Get("X-Next-Cursor"), links.Next),
 	}
+}
+
+// nextCursor is the cursor of the next page: the x-next-cursor header, or — when a
+// proxy dropped it — the `after` parameter of the Link header's next URI. An
+// offset-paged next link carries `page`, not `after`, so it yields "" as it should.
+func nextCursor(header, nextLink string) string {
+	if c := strings.TrimSpace(header); c != "" {
+		return c
+	}
+	if nextLink == "" {
+		return ""
+	}
+	u, err := url.Parse(nextLink)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get("after")
 }
 
 // linkRelRe matches one RFC 8288 link-value: <uri>; rel="name".
