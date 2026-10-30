@@ -81,10 +81,33 @@ const (
 	PayoutDetailsConfirmationText    = "I have checked the address, network, token and minimum deposit on the venue's deposit page and confirm they are correct. Funds sent to a wrong address or network, or below the venue's minimum, may be permanently lost and cannot be recovered by rail0."
 )
 
-// ErrPayoutMinimumRequired is returned, before any request, by PayoutDestinations.Create
-// when MinAmount is empty and by PayoutDestinations.Update when MinAmount points to "".
-// The venue's deposit minimum is a required, explicit answer: "0" when it has none.
-var ErrPayoutMinimumRequired = errors.New(`rail0: MinAmount is required: the venue's deposit minimum in base units, "0" when the venue has none`)
+// The venue's deposit minimum is a required, explicit answer on a new destination:
+// a figure (MinAmount) OR the statement that there is none (NoMinimum), exactly one.
+// Both errors are returned before any request, matching the gateway's 422 codes.
+var (
+	// ErrPayoutMinimumRequired: Create got neither MinAmount nor NoMinimum, or Create /
+	// Update got MinAmount pointing to "" (gateway: minimum_required).
+	ErrPayoutMinimumRequired = errors.New("rail0: the venue's deposit minimum is required: set MinAmount (base units) or NoMinimum=true when the venue has none")
+	// ErrPayoutMinimumConflict: Create / Update got both MinAmount and NoMinimum=true
+	// (gateway: minimum_conflict).
+	ErrPayoutMinimumConflict = errors.New("rail0: MinAmount and NoMinimum=true are exclusive: set one of them")
+)
+
+// checkPayoutMinimum applies the gateway's minimum rules locally so a request the
+// gateway would refuse is never sent: a blank figure is minimum_required, a figure
+// together with NoMinimum is minimum_conflict, and — when required (Create) — neither
+// is minimum_required. The SDK never picks one for the merchant.
+func checkPayoutMinimum(minAmount *Uint256String, noMinimum, required bool) error {
+	switch {
+	case minAmount != nil && *minAmount == "":
+		return ErrPayoutMinimumRequired
+	case minAmount != nil && noMinimum:
+		return ErrPayoutMinimumConflict
+	case required && minAmount == nil && !noMinimum:
+		return ErrPayoutMinimumRequired
+	}
+	return nil
+}
 
 // PayoutDestination, Payout and PayoutEvent are generated from the gateway OpenAPI
 // schema in types_gen.go.
@@ -142,12 +165,15 @@ type CreatePayoutDestinationRequest struct {
 	// Base units kept in the wallet on a full-balance payout (digits only, below 2^120);
 	// empty = the gateway's suggestion (the refundable balance still inside its window).
 	ReserveAmount Uint256String `json:"reserve_amount,omitempty"`
-	// REQUIRED: the venue's deposit minimum in base units (digits only, below 2^120), read
-	// from its deposit page; "0" when the venue has none. It is ALWAYS sent and never
-	// defaulted by the SDK — the merchant must state it. Create refuses an empty value
-	// locally (the gateway would answer 422 minimum_required). A payout below it is
-	// refused (payout_below_minimum) and the proof is raised to it.
-	MinAmount Uint256String `json:"min_amount"`
+	// The venue's deposit minimum in base units (digits only, below 2^120), read from its
+	// deposit page. A payout below it is refused (payout_below_minimum) and the proof is
+	// raised to it. EXACTLY ONE of MinAmount and NoMinimum=true is required; the SDK never
+	// defaults either. Create refuses neither or a pointer to "" (ErrPayoutMinimumRequired)
+	// and both (ErrPayoutMinimumConflict) before any request.
+	MinAmount *Uint256String `json:"min_amount,omitempty"`
+	// NoMinimum=true is the merchant's statement that the venue has no minimum deposit.
+	// Exclusive with MinAmount (see above).
+	NoMinimum bool `json:"no_minimum,omitempty"`
 	// ConfirmDetails is the merchant's attestation, and the gateway refuses the request
 	// (422 confirmation_required) unless it is true. It is ALWAYS sent, never defaulted
 	// to true by the SDK: set it only after the merchant read and accepted the
@@ -167,15 +193,15 @@ type CreatePayoutDestinationRequest struct {
 // Refused up front (422): the zero address, the wallet itself, and every contract the
 // gateway knows on that chain (payout_destination_zero_address, _own_wallet,
 // _is_contract); invalid_amount for a malformed ReserveAmount / MinAmount;
-// minimum_required when MinAmount is blank; confirmation_required when ConfirmDetails
-// is false. 409 payout_destination_exists when the wallet already has this address for
-// this token and chain.
+// minimum_required / minimum_conflict for the minimum; confirmation_required when
+// ConfirmDetails is false. 409 payout_destination_exists when the wallet already has
+// this address for this token and chain.
 //
-// An empty MinAmount is refused before any request (ErrPayoutMinimumRequired): the
-// minimum is the merchant's statement, so the SDK never fills in "0" on its own.
+// The minimum is checked before any request: neither MinAmount nor NoMinimum (or a
+// blank MinAmount) is ErrPayoutMinimumRequired, both is ErrPayoutMinimumConflict.
 func (s *PayoutDestinationsService) Create(ctx context.Context, req CreatePayoutDestinationRequest) (*PayoutDestination, error) {
-	if req.MinAmount == "" {
-		return nil, ErrPayoutMinimumRequired
+	if err := checkPayoutMinimum(req.MinAmount, req.NoMinimum, true); err != nil {
+		return nil, err
 	}
 	var out PayoutDestination
 	if err := s.http.post(ctx, "/payout_destinations", req, &out); err != nil {
@@ -206,16 +232,19 @@ type UpdatePayoutDestinationRequest struct {
 	Label *string `json:"label,omitempty"`
 	// Base units; a pointer to "" restores the gateway's suggestion.
 	ReserveAmount *Uint256String `json:"reserve_amount,omitempty"`
-	// The venue's deposit minimum, base units; a pointer to "0" says the venue has none
-	// (that is how a minimum is removed). A pointer to "" is refused before any request
-	// (ErrPayoutMinimumRequired; the gateway answers 422 minimum_required). CHANGING it
-	// requires ConfirmDetails (422 confirmation_required otherwise, nothing written).
+	// The venue's deposit minimum, base units; setting it also clears NoMinimum. A pointer
+	// to "" is refused before any request (ErrPayoutMinimumRequired): NoMinimum=true is
+	// how a minimum is removed. CHANGING it requires ConfirmDetails (422 confirmation_required otherwise, nothing written).
 	// Raising it above the destination's latest proof takes the verification away: the
 	// destination goes back to "unverified" and needs a new proof at the new minimum.
 	MinAmount *Uint256String `json:"min_amount,omitempty"`
-	// ConfirmDetails must be true when the request changes MinAmount (re-sending the
-	// same value, and Label / ReserveAmount / Active, need nothing). Set it only after
-	// the merchant accepted the details_v1 text (PayoutDetailsConfirmationText):
+	// NoMinimum=true states that the venue has no minimum deposit and clears MinAmount;
+	// false leaves things as they are. Never with MinAmount (ErrPayoutMinimumConflict,
+	// before any request). CHANGING it requires ConfirmDetails.
+	NoMinimum bool `json:"no_minimum,omitempty"`
+	// ConfirmDetails must be true when the request changes MinAmount or NoMinimum
+	// (re-sending the same value, and Label / ReserveAmount / Active, need nothing). Set
+	// it only after the merchant accepted the details_v1 text (PayoutDetailsConfirmationText):
 	//
 	//	"I have checked the address, network, token and minimum deposit on the venue's
 	//	deposit page and confirm they are correct. Funds sent to a wrong address or
@@ -230,10 +259,9 @@ type UpdatePayoutDestinationRequest struct {
 
 // Update changes a payout destination (PATCH /payout_destinations/{id}).
 //
-// A destination registered before the minimum was required may have none stated
-// (MinAmount empty in the response): it sends nothing — Payouts.Prepare and Submit
-// answer 422 payout_destination_minimum_unset — until Update sets MinAmount ("0" when
-// the venue has none, with ConfirmDetails).
+// A destination registered before the minimum was asked may have none stated (MinAmount
+// empty and NoMinimum false in the response). It is not blocked; Update states it with
+// MinAmount or NoMinimum=true (with ConfirmDetails).
 //
 // Only the destination's own wallet may edit or re-enable it; any wallet of the account
 // may disable it (Active=false alone). Disabling settles its pending payout first: an
@@ -241,8 +269,8 @@ type UpdatePayoutDestinationRequest struct {
 // payout_already_signed (resend it or let it settle, then disable). A deactivated
 // account is read-only: every change is 403 account_deactivated.
 func (s *PayoutDestinationsService) Update(ctx context.Context, id string, req UpdatePayoutDestinationRequest) (*PayoutDestination, error) {
-	if req.MinAmount != nil && *req.MinAmount == "" {
-		return nil, ErrPayoutMinimumRequired
+	if err := checkPayoutMinimum(req.MinAmount, req.NoMinimum, false); err != nil {
+		return nil, err
 	}
 	var out PayoutDestination
 	if err := s.http.patch(ctx, pathf("/payout_destinations/%s", id), req, &out); err != nil {
