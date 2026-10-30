@@ -314,7 +314,7 @@ for _, c := range bal.Balances {
 
 ## Pagination
 
-Every `PaginatedResponse[T]` carries `Data` and `Meta`. `Meta` is `{Page, PerPage, Total, TotalPages, Links}`.
+Every `PaginatedResponse[T]` carries `Data` and `Meta`. `Meta` is `{Page, PerPage, Total, TotalPages, Links, NextCursor}`.
 
 `Page` is 1-based and bounded to `1..1,000,000`; a value outside that range is refused
 with `400` `validation_failed` rather than clamped. `PerPage` is capped at 100.
@@ -325,6 +325,26 @@ with `400` `validation_failed` rather than clamped. `PerPage` is capped at 100.
 page, _ := client.Payments.List(ctx, rail0.ListPaymentsParams{PerPage: 100})
 for page.Meta.Links.Next != "" {
     page, _ = client.Payments.List(ctx, rail0.ListPaymentsParams{Page: page.Meta.Page + 1, PerPage: 100})
+}
+```
+
+**Cursor paging** (`Payments.List`, `Payouts.List`). Set `After` to walk the collection
+newest first at a constant cost per page, with no total count: start with an empty
+`After`, then pass each page's `Meta.NextCursor` back until it comes back empty (the last
+page). `NextCursor` is read from the `x-next-cursor` header, or from the `Link` next's
+`after` when that header is missing. `Page`, and any `Sort` other than `-created_at`, are
+refused beside `After` (`422 invalid_cursor`). Without `After`, page numbers work as above.
+
+```go
+params := rail0.ListPayoutsParams{PerPage: 100}
+for {
+    page, err := client.Payouts.List(ctx, params)
+    if err != nil { … }
+    // … page.Data …
+    if page.Meta.NextCursor == "" {
+        break
+    }
+    params.After = page.Meta.NextCursor
 }
 ```
 
@@ -745,7 +765,11 @@ events, _ := client.PayoutDestinations.Events(ctx, dest.ID) // the destination's
 events, _ = client.Payouts.Events(ctx, payout.ID)
 ```
 
-Lists page like `Payments.List` (see [Pagination](#pagination)). A deactivated account
+A runnable walk-through of the whole flow (confirmation prompt, proof, confirm,
+`PrepareAndSubmit`, polling to `confirmed`) is in
+[`examples/04-payout`](examples/04-payout/main.go).
+
+Lists page like `Payments.List`, by page number or by cursor (see [Pagination](#pagination)). A deactivated account
 is read-only for payouts: every write is `403 account_deactivated`. Webhooks:
 `rail0.TopicPayoutsConfirmed`, `rail0.TopicPayoutsFailed` (every failure; `error_code`
 says which) and `rail0.TopicPayoutDestinationsVerified`.

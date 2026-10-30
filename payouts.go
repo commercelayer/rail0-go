@@ -274,6 +274,9 @@ type ListPayoutsParams struct {
 	Sort          string   // sort fields: comma-separated, prefix with - for desc
 	Page          int      // page number (1-based); 0 = use server default
 	PerPage       int      // items per page; 0 = use server default
+	// After switches to cursor paging, exactly as on ListPaymentsParams: the
+	// Meta.NextCursor of the previous page; "" = offset paging.
+	After string
 }
 
 // List returns the account's payout history, newest first by default, paged like
@@ -289,6 +292,7 @@ func (s *PayoutsService) List(ctx context.Context, params ...ListPayoutsParams) 
 		setNonEmpty(q, "created_from", p.CreatedFrom)
 		setNonEmpty(q, "created_to", p.CreatedTo)
 		setPaging(q, p.Sort, p.Page, p.PerPage)
+		setNonEmpty(q, "after", p.After)
 	}
 	return listPage[Payout](ctx, s.http, withQuery("/payouts", q))
 }

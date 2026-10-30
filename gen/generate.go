@@ -488,6 +488,11 @@ type PageMeta struct {
 	// so a pager rendered off it renders none.
 	TotalPages int ` + "`" + `json:"total_pages"` + "`" + `
 	Links      PageLinks ` + "`" + `json:"links"` + "`" + `
+	// NextCursor is the cursor of the next page on the cursor-paged lists
+	// (Payments.List, Payouts.List): pass it back as After. Read from the
+	// x-next-cursor header, else from the Link next's after parameter. Empty on the
+	// last page, and on an offset-paged response.
+	NextCursor string ` + "`" + `json:"next_cursor,omitempty"` + "`" + `
 }
 
 // PaginatedResponse is a generic paginated list response.
