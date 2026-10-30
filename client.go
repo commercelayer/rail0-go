@@ -27,6 +27,10 @@ type Client struct {
 	Payments *PaymentsService
 	// Disputes exposes the account-level dispute list (open and closed).
 	Disputes *DisputesService
+	// PayoutDestinations manages the deposit addresses payouts are sent to (JWT).
+	PayoutDestinations *PayoutDestinationsService
+	// Payouts prepares, submits and reads merchant cash-out transfers (JWT).
+	Payouts *PayoutsService
 	// Webhooks exposes webhook subscription management (JWT).
 	Webhooks *WebhooksService
 	// Analytics exposes the account-scoped merchant sales analytics (JWT + account).
@@ -39,18 +43,20 @@ type Client struct {
 func NewClient(opts ClientOptions) *Client {
 	h := newHTTPClient(opts)
 	return &Client{
-		http:           h,
-		Accounts:       &AccountsService{http: h},
-		Wallets:        &WalletsService{http: h},
-		PaymentMethods: &PaymentMethodsService{http: h},
-		Auth:           &AuthService{http: h},
-		Chains:         &ChainsService{http: h},
-		Tokens:         &TokensService{http: h},
-		Payments:       &PaymentsService{http: h},
-		Disputes:       &DisputesService{http: h},
-		Webhooks:       &WebhooksService{http: h},
-		Analytics:      &AnalyticsService{http: h},
-		Health:         &HealthService{http: h},
+		http:               h,
+		Accounts:           &AccountsService{http: h},
+		Wallets:            &WalletsService{http: h},
+		PaymentMethods:     &PaymentMethodsService{http: h},
+		Auth:               &AuthService{http: h},
+		Chains:             &ChainsService{http: h},
+		Tokens:             &TokensService{http: h},
+		Payments:           &PaymentsService{http: h},
+		Disputes:           &DisputesService{http: h},
+		PayoutDestinations: &PayoutDestinationsService{http: h},
+		Payouts:            &PayoutsService{http: h},
+		Webhooks:           &WebhooksService{http: h},
+		Analytics:          &AnalyticsService{http: h},
+		Health:             &HealthService{http: h},
 	}
 }
 

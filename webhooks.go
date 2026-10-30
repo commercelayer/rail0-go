@@ -44,6 +44,20 @@ const (
 	// of its own, since it would be stale on every retry.
 	// A window that already closed gets TopicPaymentsExpired instead, never this.
 	TopicPaymentsAuthorizationExpiring = "payments.authorization_expiring"
+
+	// Payout topics carry the same envelope (id, emitted_at, topic) with the subject
+	// under its own key instead of payment/transaction: `payout` (the Payout, as
+	// Payouts.Get returns it) or `payout_destination` (the PayoutDestination).
+	//
+	// TopicPayoutsConfirmed: a payout's transfer was mined and carries the expected
+	// ERC-20 Transfer. Can follow a TopicPayoutsFailed for the same payout when a late
+	// hash revived one that failed submission_timeout or dropped.
+	TopicPayoutsConfirmed = "payouts.confirmed"
+	// TopicPayoutsFailed: ONE topic for every way a payout fails — its error_code says
+	// which (reverted, foreign_transfer, dropped, submission_timeout, cancelled).
+	TopicPayoutsFailed = "payouts.failed"
+	// TopicPayoutDestinationsVerified: PayoutDestinations.Confirm verified a destination.
+	TopicPayoutDestinationsVerified = "payout_destinations.verified"
 )
 
 // Webhook (the webhook subscription shape, including the SharedSecret returned

@@ -650,3 +650,173 @@ func SignSigningPayloadFor(sp *SigningPayload, privateKey []byte, want PayloadEx
 	}
 	return signSigningPayload(privateKey, sp)
 }
+
+// ================================================================
+//  Pre-sign verification of a gateway-built payout transfer
+// ================================================================
+//
+// A payout's `unsigned_transaction` is not a RAIL0 call: it is a plain ERC-20
+// transfer(address,uint256) on the token contract, from the merchant's wallet to a
+// payout destination. Signed blindly, a hostile or misconfigured gateway could have
+// the merchant's key send the whole balance to an address of its choosing, or call
+// approve() instead. VerifyPayoutTransfer holds the transaction to EXACTLY the
+// transfer the caller expects; anything else — another recipient, amount, token or
+// chain, a native value, another function, extra calldata — refuses the signature.
+//
+// Ported from rail0-admin's assertTxTarget + assertTransferCall (lib/onchain-guard.ts),
+// with the same fail-closed rule: an expectation that cannot be compared refuses.
+
+// ERC20TransferSignature is the one function a payout transaction may call.
+const ERC20TransferSignature = "transfer(address,uint256)"
+
+// ERC20TransferSelector is transfer(address,uint256)'s 4-byte selector as 8 lowercase
+// hex chars ("a9059cbb"), computed from ERC20TransferSignature.
+var ERC20TransferSelector = hex.EncodeToString(crypto.Keccak256([]byte(ERC20TransferSignature))[:4])
+
+// PayoutTransferExpectation is the transfer the caller expects a prepared payout to
+// be. Every field is REQUIRED: VerifyPayoutTransfer refuses rather than skips a check
+// it cannot make. Build it from a destination you read yourself with
+// PayoutTransferExpectationFor.
+type PayoutTransferExpectation struct {
+	// The chain the destination is bound to; the transaction's chain_id must equal it.
+	ChainID int
+	// The ERC-20 contract; the transaction's `to` must equal it.
+	Token Address
+	// The destination's deposit address; the transfer's recipient must equal it.
+	To Address
+	// Base units (digits only); the transfer's amount must equal it.
+	Amount Uint256String
+}
+
+// PayoutTransferExpectationFor is the expectation for a transfer of amount (base
+// units, e.g. Payout.Amount) to dest: its chain, token and address.
+func PayoutTransferExpectationFor(dest *PayoutDestination, amount Uint256String) PayoutTransferExpectation {
+	if dest == nil {
+		return PayoutTransferExpectation{Amount: amount}
+	}
+	return PayoutTransferExpectation{ChainID: dest.ChainID, Token: dest.Token, To: dest.Address, Amount: amount}
+}
+
+// VerifyPayoutTransfer checks a payout's `unsigned_transaction` against the transfer
+// the caller expects, BEFORE any key touches it. signer is the address of the key
+// about to sign (SignerAddress), or "" to skip that comparison. It returns an error
+// naming the first field that disagrees ("rail0: refusing to sign: …"), nil otherwise.
+//
+// In order:
+//
+//  1. the expectation is complete (chain, token and recipient addresses, base-unit amount);
+//  2. the JSON parses;
+//  3. `value` is zero — a payout moves tokens, never native currency;
+//  4. `chain_id` is present and equals want.ChainID;
+//  5. `from`, when present, is the signing key's address;
+//  6. `to` is a well-formed address equal to want.Token — the transfer runs on the
+//     token contract, so any other target is another contract entirely;
+//  7. the calldata is EXACTLY 68 bytes: selector 0xa9059cbb, the recipient as a
+//     left-padded address word equal to want.To (non-zero padding refuses), and the
+//     amount word equal to want.Amount. Anything trailing refuses: the token would
+//     ignore it, but it is not the transaction the gateway described.
+func VerifyPayoutTransfer(unsignedJSON string, signer string, want PayoutTransferExpectation) error {
+	if want.ChainID <= 0 {
+		return refuse("the payout's chain is unknown, so the transaction's chain cannot be checked")
+	}
+	if !isHexAddress(string(want.Token)) {
+		return refuse("the payout's token (%q) is not an address, so the transaction's target cannot be checked", want.Token)
+	}
+	if !isHexAddress(string(want.To)) {
+		return refuse("the payout destination's address (%q) is not an address, so the recipient cannot be checked", want.To)
+	}
+	wantAmount, ok := new(big.Int).SetString(strings.TrimSpace(string(want.Amount)), 10)
+	if !ok || wantAmount.Sign() < 0 || !isDigits(strings.TrimSpace(string(want.Amount))) {
+		return refuse("the payout amount (%q) is not base units, so the transfer amount cannot be checked", want.Amount)
+	}
+
+	var tx unsignedTxHeader
+	if err := json.Unmarshal([]byte(unsignedJSON), &tx); err != nil {
+		return refuse("the gateway's unsigned transaction is not valid JSON: %w", err)
+	}
+	if !isZeroNativeValue(tx.Value) {
+		return refuse("transaction attaches native currency (value=%s); a payout is an ERC-20 transfer and must be value-0", tx.Value)
+	}
+	if tx.ChainID.String() != fmt.Sprint(want.ChainID) {
+		return refuse("transaction targets chain %q but the payout destination is on chain %d", tx.ChainID.String(), want.ChainID)
+	}
+	if signer != "" && tx.From != "" && !strings.EqualFold(tx.From, signer) {
+		return refuse("transaction is prepared from %s but the signing key is %s", tx.From, signer)
+	}
+	if !isHexAddress(tx.To) {
+		return refuse("transaction has no valid `to` address (%q); it must be the token contract %s", tx.To, want.Token)
+	}
+	if !strings.EqualFold(tx.To, string(want.Token)) {
+		return refuse("transaction is addressed to %s but the payout's token is %s", tx.To, want.Token)
+	}
+	return checkTransferCalldata(tx.Data, want, wantAmount)
+}
+
+// checkTransferCalldata asserts data is transfer(want.To, wantAmount) and nothing else.
+func checkTransferCalldata(data string, want PayoutTransferExpectation, wantAmount *big.Int) error {
+	raw := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(data)), "0x")
+	if _, err := hex.DecodeString(raw); err != nil {
+		return refuse("calldata is not hex")
+	}
+	if len(raw) < selectorHexLen {
+		return refuse("calldata is %d hex chars, too short to carry a function selector", len(raw))
+	}
+	if got := raw[:selectorHexLen]; got != ERC20TransferSelector {
+		return refuse("the call is selector 0x%s, not %s", got, ERC20TransferSignature)
+	}
+	const wantLen = selectorHexLen + 2*wordHexLen
+	if len(raw) < wantLen {
+		return refuse("calldata is %d hex chars, too short for %s", len(raw), ERC20TransferSignature)
+	}
+	if len(raw) > wantLen {
+		return refuse("calldata carries %d hex chars after the transfer arguments; a payout transfer has nothing trailing", len(raw)-wantLen)
+	}
+	recipientWord := raw[selectorHexLen : selectorHexLen+wordHexLen]
+	if strings.Trim(recipientWord[:24], "0") != "" {
+		return refuse("the transfer's recipient word is not a left-padded address (0x%s)", recipientWord)
+	}
+	recipient := "0x" + recipientWord[24:]
+	if !strings.EqualFold(recipient, string(want.To)) {
+		return refuse("the transfer pays %s, not the payout destination %s", recipient, want.To)
+	}
+	gotAmount, _ := new(big.Int).SetString(raw[selectorHexLen+wordHexLen:], 16)
+	if gotAmount == nil || gotAmount.Cmp(wantAmount) != 0 {
+		return refuse("the transfer moves %s base units, not the %s expected", gotAmount, wantAmount)
+	}
+	return nil
+}
+
+// isDigits reports whether s is a non-empty run of ASCII digits.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// SignPayoutTransfer verifies a payout's `unsigned_transaction` against the expected
+// transfer (VerifyPayoutTransfer, with the key's own address as the expected sender)
+// and only then signs it, returning the signed raw transaction for Payouts.Submit. A
+// transaction that fails the check leaves no signature behind.
+//
+//	dest, _ := client.PayoutDestinations.Get(ctx, payout.DestinationID)
+//	raw, err := rail0.SignPayoutTransfer(payout.UnsignedTransaction, key,
+//	    rail0.PayoutTransferExpectationFor(dest, payout.Amount))
+//	if err == nil {
+//	    payout, err = client.Payouts.Submit(ctx, payout.ID, raw)
+//	}
+func SignPayoutTransfer(unsignedJSON string, privateKey []byte, want PayoutTransferExpectation) (string, error) {
+	signer, err := SignerAddress(privateKey)
+	if err != nil {
+		return "", err
+	}
+	if err := VerifyPayoutTransfer(unsignedJSON, signer, want); err != nil {
+		return "", err
+	}
+	return SignTransaction(unsignedJSON, privateKey)
+}

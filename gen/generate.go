@@ -17,7 +17,7 @@
 //     from the enum schemas' x-enum-descriptions / x-enum-bytes32 extensions.
 //
 // What it does NOT emit:
-//   - The client method files (accounts.go, payments.go, chains.go, tokens.go,
+//   - The client method files (accounts.go, payments.go, payouts.go, chains.go, tokens.go,
 //     auth.go, webhooks.go, health.go). Those are hand-maintained and aligned to
 //     the gateway API surface; the generator must never overwrite them.
 //
@@ -191,6 +191,23 @@ var schemaTypeOverride = map[string]map[string]string{
 	"EventCallback": {
 		"response_code": "*int",
 	},
+	"Payout": {
+		"amount":       "Uint256String",
+		"token":        "Address",
+		"address":      "Address",
+		"sender":       "Address",
+		"block_number": "*int",
+	},
+	"PayoutDestination": {
+		"token":   "Address",
+		"address": "Address",
+		// Nullable (best effort, eth_getCode): a pointer keeps "not checked" apart
+		// from a real "no code".
+		"has_code":          "*bool",
+		"reserve_amount":    "Uint256String",
+		"min_amount":        "Uint256String",
+		"suggested_reserve": "Uint256String",
+	},
 	"Token": {
 		"address": "Address",
 	},
@@ -220,6 +237,8 @@ var reasonDictionaries = []struct{ Schema, Table string }{
 // client's public field name. Keeps the SDK API stable across regeneration.
 var fieldNameOverride = map[string]map[string]string{
 	"Payment": {"rail0_id": "Rail0Id"},
+	// Go initialisms for a new field (the default rules would give PublicRpcUrls).
+	"Blockchain": {"public_rpc_urls": "PublicRPCURLs"},
 }
 
 // extraFields injects SDK-only fields onto a generated struct that have no
@@ -265,6 +284,11 @@ var skipSchemas = map[string]bool{
 	"Account":        true,
 	"PaymentWindows": true,
 	"AdminContract":  true,
+	// Admin-only too: the open-exposure read before deactivating an account
+	// (GET /admin/accounts/{id}/exposure) and the account stub embedded in the
+	// operator's cross-account payout listings. Neither reaches a merchant route.
+	"AccountExposure": true,
+	"AccountSummary":  true,
 }
 
 // ================================================================

@@ -142,7 +142,7 @@ var errorHints = map[string]string{
 	"wallet_add_unavailable": "adding a wallet to an account is not available yet — it returns with the merchant wallet-management section",
 	// Deactivation blocks money-in and account writes only; reads and the operations that
 	// return funds keep working, so a wind-down is never trapped.
-	"account_deactivated": "the merchant account is deactivated — void, release and refund still work, but new payments, authorize, charge, capture and account changes are blocked until an operator reactivates it",
+	"account_deactivated": "the merchant account is deactivated — void, release and refund still work, but new payments, authorize, charge, capture, account changes and every payout or payout-destination write are blocked until an operator reactivates it",
 	"wallet_deactivated":  "this wallet is deactivated — it can still read, but cannot act on payments or change the account; if you switched it off, its own session can switch it back on (Wallets.Update with Active=true), or sign in with another of the account's wallets",
 	// gateway#439: an operator's switch-off revokes the key, so the key's own session
 	// cannot lift it (the owner's own switch-off it can).
@@ -200,6 +200,26 @@ var errorHints = map[string]string{
 	// gateway at all.
 	"forbidden":              "not permitted for this session — typically the operator grant, a resource owned by another account, or a transaction signed by the wrong wallet",
 	"payment_already_exists": "a payment with this id already exists on-chain",
+	// Payouts (merchant cash-out): /payout_destinations and /payouts.
+	"confirmation_required":            "set ConfirmDetails to true once the merchant has checked the address, network, token and minimum deposit at the venue (PayoutDetailsConfirmationText) — required to register a destination or change its minimum",
+	"invalid_amount":                   "reserve_amount and min_amount are base units: digits only, below 2^120",
+	"unknown_chain":                    "the chain id is not one the gateway has active — see GET /blockchains",
+	"insufficient_balance":             "the wallet holds less than the payout (after the refund reserve) — the error detail names what is available",
+	"payout_below_minimum":             "the amount is below the destination's minimum deposit — send at least min_amount, or prepare again if the minimum was raised after this payout was prepared",
+	"payout_destination_unverified":    "the destination is not verified yet — send the proof (purpose proof), wait for the venue to credit it, then confirm the destination",
+	"payout_destination_disabled":      "the destination is disabled — re-enable it (Update with Active=true) or use another one",
+	"payout_destination_proof_missing": "there is no confirmed proof transfer yet — prepare and submit the proof, wait for it to confirm, then confirm the destination",
+	"payout_destination_exists":        "this wallet already has a destination for this address, token and chain — use the existing one",
+	"payout_destination_zero_address":  "the deposit address is the zero address — copy the address from the venue's deposit page",
+	"payout_destination_own_wallet":    "the deposit address is the paying wallet itself — use the venue's deposit address",
+	"payout_destination_is_contract":   "the deposit address is a RAIL0 contract or a token on this chain — use the venue's deposit address",
+	"payout_already_signed":            "a signed transaction is already stored for this payout — resend it (Payouts.Resend) or let it settle; it cannot be replaced or cancelled",
+	"payout_not_pending":               "the payout is already submitted or settled — nothing to sign, send or cancel",
+	"payout_not_signed":                "nothing is stored to resend — sign the transfer and submit it first",
+	"payout_hash_in_use":               "another payout already records this transaction hash — report the hash of this payout's own transfer",
+	"payout_limit_reached":             "too many payouts from this wallet in the last hour — wait and try again",
+	"foreign_transfer_hash":            "that transaction is not this payout's transfer (sender, token, amount or destination differ) — report the hash of the transfer the payout prepared",
+	"invalid_transaction":              "the signed transaction could not be decoded — submit the raw signed bytes (0x…) of the prepared transfer",
 }
 
 // firstNonEmpty returns the first argument that isn't the empty string, or "".
