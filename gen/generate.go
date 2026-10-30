@@ -237,6 +237,8 @@ var reasonDictionaries = []struct{ Schema, Table string }{
 // client's public field name. Keeps the SDK API stable across regeneration.
 var fieldNameOverride = map[string]map[string]string{
 	"Payment": {"rail0_id": "Rail0Id"},
+	// Go initialisms for a new field (the default rules would give PublicRpcUrls).
+	"Blockchain": {"public_rpc_urls": "PublicRPCURLs"},
 }
 
 // extraFields injects SDK-only fields onto a generated struct that have no

@@ -151,6 +151,11 @@ chains, _ := client.Chains.List(ctx)                                      // GET
 tokens, _ := client.Tokens.List(ctx, rail0.ListTokensParams{ChainID: 8453}) // GET /tokens?chain_id=8453
 ```
 
+`rail0.ResolveChain(chains, ref)` picks one chain by numeric id (`"5042002"`) or by
+`Slug` (`"arc"`, case-insensitive — shared by a chain's testnet and mainnet, unique on one
+gateway); it errors with the available slugs when nothing matches. `PublicRPCURLs` lists
+keyless RPC endpoints, in failover order, for reading the chain directly.
+
 ### Settlement time
 
 Every chain carries `Settlement` — how long an operation has taken to settle **on
