@@ -203,10 +203,8 @@ var schemaTypeOverride = map[string]map[string]string{
 		"address": "Address",
 		// Nullable (best effort, eth_getCode): a pointer keeps "not checked" apart
 		// from a real "no code".
-		"has_code":          "*bool",
-		"reserve_amount":    "Uint256String",
-		"min_amount":        "Uint256String",
-		"suggested_reserve": "Uint256String",
+		"has_code":   "*bool",
+		"min_amount": "Uint256String",
 	},
 	"Token": {
 		"address": "Address",
