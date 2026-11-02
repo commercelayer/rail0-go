@@ -202,9 +202,9 @@ var errorHints = map[string]string{
 	"payment_already_exists": "a payment with this id already exists on-chain",
 	// Payouts (merchant cash-out): /payout_destinations and /payouts.
 	"confirmation_required":            "set ConfirmDetails to true once the merchant has checked the address, network, token and minimum deposit at the venue (PayoutDetailsConfirmationText) — required to register a destination or change its minimum",
-	"invalid_amount":                   "reserve_amount and min_amount are base units: digits only, below 2^120",
+	"invalid_amount":                   "min_amount is base units: digits only, below 2^120",
 	"unknown_chain":                    "the chain id is not one the gateway has active — see GET /blockchains",
-	"insufficient_balance":             "the wallet holds less than the payout (after the refund reserve) — the error detail names what is available",
+	"insufficient_balance":             "the wallet holds less than the payout after the reserves kept back (refund reserve, and gas reserve on a native-gas chain) — the error detail names what is available; KeepRefundReserve / KeepGasReserve false opt out of one",
 	"minimum_required":                 "state the venue's deposit minimum: min_amount in base units from its deposit page, or no_minimum: true when the venue has none — min_amount may not be blank",
 	"minimum_conflict":                 "send min_amount OR no_minimum: true, not both",
 	"payout_below_minimum":             "the amount is below the destination's minimum deposit — send at least min_amount, or prepare again if the minimum was raised after this payout was prepared",

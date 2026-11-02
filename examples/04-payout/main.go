@@ -85,7 +85,15 @@ func main() {
 	fmt.Printf("Destination %s: %s\n", dest.ID, dest.Status)
 
 	// 3. The payout. Amount is a human decimal, or rail0.PayoutAmountAll for the
-	// balance minus the refund reserve.
+	// balance minus the reserves kept back (decided now, both kept by default: the
+	// refund reserve and, on a chain whose gas is this very token, the gas reserve).
+	reserves, err := client.PayoutDestinations.Reserves(ctx, dest.ID)
+	if err != nil {
+		log.Fatalf("PayoutDestinations.Reserves: %v", err)
+	}
+	fmt.Printf("Balance %s %s: refund reserve %s (%d payments), gas reserve %s, available %s\n",
+		reserves.BalanceFormatted, reserves.TokenSymbol, reserves.RefundReserveFormatted,
+		reserves.RefundablePayments, reserves.GasReserveFormatted, reserves.AvailableFormatted)
 	payout, err := client.Payouts.PrepareAndSubmit(ctx, rail0.PreparePayoutRequest{
 		DestinationID: dest.ID,
 		Amount:        "125.50",

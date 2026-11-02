@@ -28,8 +28,15 @@ import (
 //     Once it is mined and the venue credited it, PayoutDestinations.Confirm marks the
 //     destination "verified".
 //  3. Pay out: Payouts.Prepare with an Amount (a human decimal, or PayoutAmountAll for
-//     the balance minus the refund reserve), verify, sign, submit. PrepareAndSubmit and
-//     SignAndSubmit run the verify → sign → submit steps for a private key.
+//     the balance minus the reserves kept back), verify, sign, submit. PrepareAndSubmit
+//     and SignAndSubmit run the verify → sign → submit steps for a private key.
+//
+// The reserves are decided at payout time, not on the destination: by default Prepare
+// keeps back the refund reserve (the refundable balance of the wallet's payments still
+// inside their refund window) and, on a chain whose gas is paid in this very token
+// (Arc's USDC), the gas reserve (the gas for those refunds and for the captures the
+// wallet still owes). KeepRefundReserve / KeepGasReserve on PreparePayoutRequest opt
+// out of one for that payout; PayoutDestinations.Reserves shows the figures beforehand.
 //
 // Every route here is the session wallet's (JWT), scoped to its account.
 
@@ -42,8 +49,9 @@ const (
 	PayoutPurposeProof = "proof"
 )
 
-// PayoutAmountAll asks Prepare for the wallet's whole balance minus the refund reserve
-// (the destination's ReserveAmount, or SuggestedReserve when none is set).
+// PayoutAmountAll asks Prepare for the wallet's whole balance minus the reserves kept
+// back (the refund reserve and, on a native-gas chain, the gas reserve and the transfer's
+// own gas allowance) — PayoutReserves.Available, as PayoutDestinations.Reserves reports it.
 const PayoutAmountAll = "all"
 
 // Payout statuses (Payout.Status).
@@ -128,10 +136,12 @@ type ListPayoutDestinationsParams struct {
 	Sort     string // sort fields: comma-separated, prefix with - for desc
 	Page     int    // page number (1-based); 0 = use server default
 	PerPage  int    // items per page; 0 = use server default
+	// IncludeDeleted lists deleted destinations too (DeletedAt set); false = only live ones.
+	IncludeDeleted bool
 }
 
 // List returns the account's payout destinations — every wallet's, not only the
-// session's. Paged like Payments.List (bare array, pagination in headers).
+// session's. Deleted destinations are left out unless IncludeDeleted. Paged like Payments.List (bare array, pagination in headers).
 func (s *PayoutDestinationsService) List(ctx context.Context, params ...ListPayoutDestinationsParams) (*PaginatedResponse[PayoutDestination], error) {
 	q := url.Values{}
 	if len(params) > 0 {
@@ -139,6 +149,9 @@ func (s *PayoutDestinationsService) List(ctx context.Context, params ...ListPayo
 		setNonEmpty(q, "wallet_id", p.WalletID)
 		setNonEmpty(q, "status", p.Status)
 		setPaging(q, p.Sort, p.Page, p.PerPage)
+		if p.IncludeDeleted {
+			q.Set("include_deleted", "true")
+		}
 	}
 	return listPage[PayoutDestination](ctx, s.http, withQuery("/payout_destinations", q))
 }
@@ -162,9 +175,6 @@ type CreatePayoutDestinationRequest struct {
 	Label   string  `json:"label,omitempty"`
 	// One of the PayoutDestinationKind* constants; empty = "exchange".
 	Kind string `json:"kind,omitempty"`
-	// Base units kept in the wallet on a full-balance payout (digits only, below 2^120);
-	// empty = the gateway's suggestion (the refundable balance still inside its window).
-	ReserveAmount Uint256String `json:"reserve_amount,omitempty"`
 	// The venue's deposit minimum in base units (digits only, below 2^120), read from its
 	// deposit page. A payout below it is refused (payout_below_minimum) and the proof is
 	// raised to it. EXACTLY ONE of MinAmount and NoMinimum=true is required; the SDK never
@@ -192,7 +202,7 @@ type CreatePayoutDestinationRequest struct {
 //
 // Refused up front (422): the zero address, the wallet itself, and every contract the
 // gateway knows on that chain (payout_destination_zero_address, _own_wallet,
-// _is_contract); invalid_amount for a malformed ReserveAmount / MinAmount;
+// _is_contract); invalid_amount for a malformed MinAmount;
 // minimum_required / minimum_conflict for the minimum; confirmation_required when
 // ConfirmDetails is false. 409 payout_destination_exists when the wallet already has
 // this address for this token and chain.
@@ -230,8 +240,6 @@ func getPayoutDestination(ctx context.Context, h *httpClient, id string) (*Payou
 // A nil pointer leaves the field as it is.
 type UpdatePayoutDestinationRequest struct {
 	Label *string `json:"label,omitempty"`
-	// Base units; a pointer to "" restores the gateway's suggestion.
-	ReserveAmount *Uint256String `json:"reserve_amount,omitempty"`
 	// The venue's deposit minimum, base units; setting it also clears NoMinimum. A pointer
 	// to "" is refused before any request (ErrPayoutMinimumRequired): NoMinimum=true is
 	// how a minimum is removed. CHANGING it requires ConfirmDetails (422 confirmation_required otherwise, nothing written).
@@ -243,7 +251,7 @@ type UpdatePayoutDestinationRequest struct {
 	// before any request). CHANGING it requires ConfirmDetails.
 	NoMinimum bool `json:"no_minimum,omitempty"`
 	// ConfirmDetails must be true when the request changes MinAmount or NoMinimum
-	// (re-sending the same value, and Label / ReserveAmount / Active, need nothing). Set
+	// (re-sending the same value, and Label / Active, need nothing). Set
 	// it only after the merchant accepted the details_v1 text (PayoutDetailsConfirmationText):
 	//
 	//	"I have checked the address, network, token and minimum deposit on the venue's
@@ -287,6 +295,43 @@ func (s *PayoutDestinationsService) Update(ctx context.Context, id string, req U
 func (s *PayoutDestinationsService) Confirm(ctx context.Context, id string) (*PayoutDestination, error) {
 	var out PayoutDestination
 	if err := s.http.post(ctx, pathf("/payout_destinations/%s/confirm", id), struct{}{}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Delete soft-deletes a payout destination (DELETE /payout_destinations/{id}) and
+// returns it with DeletedAt set and Status "disabled". The row is kept — its payouts and
+// audit trail still name it, Get and Events still read it — but List leaves it out
+// (unless IncludeDeleted) and its address may be registered again.
+//
+// Its pending payout is settled first, as on a switch-off: an unsigned one fails
+// "cancelled", a signed one refuses the delete with 409 payout_already_signed (resend it
+// or let it settle, then delete). Only the destination's own wallet may delete it; an
+// already deleted destination is 404, as is every further write to it.
+func (s *PayoutDestinationsService) Delete(ctx context.Context, id string) (*PayoutDestination, error) {
+	var out PayoutDestination
+	if err := s.http.delete(ctx, pathf("/payout_destinations/%s", id), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Reserves reports what a payout to the destination would keep back right now, and what
+// it could move (GET /payout_destinations/{id}/reserves). Nothing is stored: the figures
+// are computed from the wallet's payments and the chain's current fees (two chain reads),
+// so they may differ by the time Prepare runs.
+//
+// RefundReserve (with RefundablePayments) is the refundable balance of the wallet's
+// payments in this token still inside their refund window. GasReserve is the gas for
+// those refunds and for the wallet's open authorizations plus BaseCaptures more captures,
+// and GasAllowance the payout transfer's own fee — both only when NativeGas (the chain's
+// gas is this very token, Arc's USDC), "0" elsewhere. Available is what PayoutAmountAll
+// moves with both reserves kept (the default). Readable by every wallet of the account; a
+// deleted destination still reads.
+func (s *PayoutDestinationsService) Reserves(ctx context.Context, id string) (*PayoutReserves, error) {
+	var out PayoutReserves
+	if err := s.http.get(ctx, pathf("/payout_destinations/%s/reserves", id), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -358,6 +403,14 @@ type PreparePayoutRequest struct {
 	// Required for a payout: a human decimal ("125.50") or PayoutAmountAll. Ignored for
 	// a proof, whose amount the gateway sets.
 	Amount string `json:"amount,omitempty"`
+	// KeepRefundReserve and KeepGasReserve decide, for this payout only (purpose payout),
+	// whether the refund reserve and the gas reserve are kept back in the wallet. nil =
+	// omitted = the gateway default, kept. A pointer to false opts out: the wallet may
+	// then lack the funds for a later refund (refund reserve) or the gas for a later
+	// refund or capture (gas reserve, native-gas chains only). The payout records what it
+	// kept back (Payout.RefundReserve, Payout.GasReserve).
+	KeepRefundReserve *bool `json:"keep_refund_reserve,omitempty"`
+	KeepGasReserve    *bool `json:"keep_gas_reserve,omitempty"`
 }
 
 // Prepare builds the unsigned ERC-20 transfer for a payout (POST /payouts/prepare).
@@ -373,8 +426,8 @@ type PreparePayoutRequest struct {
 // instead of 201); once a signature is stored it is refused with 409
 // payout_already_signed — Resend that one instead. Other refusals (422):
 // payout_destination_unverified (an unverified destination takes the proof amount at
-// most), payout_destination_disabled, payout_below_minimum, insufficient_balance,
-// payout_limit_reached.
+// most), payout_destination_disabled, payout_below_minimum, insufficient_balance (for
+// PayoutAmountAll: nothing left after the reserves kept back), payout_limit_reached.
 func (s *PayoutsService) Prepare(ctx context.Context, req PreparePayoutRequest) (*Payout, error) {
 	var out Payout
 	if err := s.http.post(ctx, "/payouts/prepare", req, &out); err != nil {

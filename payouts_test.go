@@ -437,6 +437,15 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 	must(err)
 	_, err = c.Payouts.Prepare(ctx, PreparePayoutRequest{DestinationID: payoutDestID, Purpose: PayoutPurposeProof})
 	must(err)
+	no, yes := false, true
+	_, err = c.Payouts.Prepare(ctx, PreparePayoutRequest{DestinationID: payoutDestID, Amount: PayoutAmountAll, KeepRefundReserve: &no, KeepGasReserve: &yes})
+	must(err)
+	_, err = c.PayoutDestinations.Delete(ctx, payoutDestID)
+	must(err)
+	_, err = c.PayoutDestinations.Reserves(ctx, payoutDestID)
+	must(err)
+	_, err = c.PayoutDestinations.List(ctx, ListPayoutDestinationsParams{IncludeDeleted: true})
+	must(err)
 
 	want := []struct{ method, path, query, raw string }{
 		{"POST", "/payout_destinations", "", ""},
@@ -456,6 +465,10 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		{"POST", "/payouts/" + payoutID + "/resend", "", "{}"},
 		{"POST", "/payouts/" + payoutID + "/cancel", "", "{}"},
 		{"POST", "/payouts/prepare", "", `{"destination_id":"` + payoutDestID + `","purpose":"proof"}`},
+		{"POST", "/payouts/prepare", "", `{"destination_id":"` + payoutDestID + `","amount":"all","keep_refund_reserve":false,"keep_gas_reserve":true}`},
+		{"DELETE", "/payout_destinations/" + payoutDestID, "", ""},
+		{"GET", "/payout_destinations/" + payoutDestID + "/reserves", "", ""},
+		{"GET", "/payout_destinations", "include_deleted=true", ""},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("%d requests, want %d", len(got), len(want))
@@ -468,6 +481,55 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		if w.raw != "" && g.raw != w.raw {
 			t.Errorf("request %d body = %s, want %s", i, g.raw, w.raw)
 		}
+	}
+}
+
+// The reserve opt-outs are omitted unless set: nil leaves the gateway default (kept),
+// so a plain prepare sends neither key.
+func TestPreparePayoutOmitsUnsetReserveFlags(t *testing.T) {
+	b, err := json.Marshal(PreparePayoutRequest{DestinationID: payoutDestID, Amount: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "keep_") {
+		t.Errorf("unset reserve flags must be omitted: %s", b)
+	}
+}
+
+func TestPayoutDestinationDeleteAndReservesDecode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete:
+			_, _ = w.Write([]byte(`{"id":"` + payoutDestID + `","status":"disabled","deleted_at":"2026-11-02T10:00:00Z"}`))
+		case strings.HasSuffix(r.URL.Path, "/reserves"):
+			_, _ = w.Write([]byte(`{"destination_id":"` + payoutDestID + `","chain_id":5042002,"token":"0x36","token_symbol":"USDC","decimals":6,` +
+				`"balance":"10000000","balance_formatted":"10.0","refund_reserve":"2000000","refund_reserve_formatted":"2.0","refundable_payments":3,` +
+				`"native_gas":true,"gas_reserve":"150000","gas_reserve_formatted":"0.15","gas_refunds":3,"open_authorizations":1,"base_captures":5,` +
+				`"gas_allowance":"20000","gas_allowance_formatted":"0.02","available":"7830000","available_formatted":"7.83"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt"})
+	ctx := context.Background()
+
+	d, err := c.PayoutDestinations.Delete(ctx, payoutDestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.DeletedAt == "" || d.Status != PayoutDestinationStatusDisabled {
+		t.Errorf("deleted destination = %+v", d)
+	}
+	res, err := c.PayoutDestinations.Reserves(ctx, payoutDestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Available != "7830000" || res.RefundReserve != "2000000" || res.RefundablePayments != 3 ||
+		!res.NativeGas || res.GasReserve != "150000" || res.GasAllowance != "20000" ||
+		res.OpenAuthorizations != 1 || res.BaseCaptures != 5 || res.Decimals != 6 {
+		t.Errorf("reserves = %+v", res)
 	}
 }
 
