@@ -1299,8 +1299,9 @@ go build ./...
 > ```
 >
 > The client method files (`auth.go`, `accounts.go`, `payments.go`, `disputes.go`, `wallets.go`,
-> `payment_methods.go`, `webhooks.go`, `analytics.go`, `health.go`, `chains.go`, `tokens.go`),
-> the signing helpers (`signing.go`, `transaction.go`), and the stablecoin
+> `payment_methods.go`, `webhooks.go`, `payouts.go`, `analytics.go`, `health.go`, `chains.go`,
+> `tokens.go`), the signing helpers and pre-sign checks (`signing.go`, `transaction.go`,
+> `tx_verify.go`), and the stablecoin
 > registry (`stablecoins.go`) are hand-maintained and never overwritten by the
 > generator.
 
