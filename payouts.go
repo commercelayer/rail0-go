@@ -22,7 +22,7 @@ import (
 // The flow:
 //
 //  1. Register a destination (PayoutDestinations.Create) — bound to ONE chain and ONE
-//     token, with ConfirmDetails set to true after the merchant checked the details at
+//     token, named with a Label unique within the account, with ConfirmDetails set to true after the merchant checked the details at
 //     the venue. It is born "unverified".
 //  2. Send the proof: Payouts.Prepare with Purpose PayoutPurposeProof, sign, submit.
 //     Once it is mined and the venue credited it, PayoutDestinations.Confirm marks the
@@ -91,6 +91,20 @@ var (
 	// (gateway: minimum_conflict).
 	ErrPayoutMinimumConflict = errors.New("rail0: MinAmount and NoMinimum=true are exclusive: set one of them")
 )
+
+// ErrPayoutLabelRequired: Create got a blank (empty or whitespace-only) Label, or Update
+// got Label pointing to one (gateway: label_required). A destination always has a name,
+// unique per account; the gateway trims it and checks the uniqueness itself.
+var ErrPayoutLabelRequired = errors.New("rail0: a payout destination label is required: name it (unique within the account)")
+
+// checkPayoutLabel refuses a blank label locally, as the gateway would (422
+// label_required, after trimming). nil (Update leaving the label alone) passes.
+func checkPayoutLabel(label *string) error {
+	if label != nil && strings.TrimSpace(*label) == "" {
+		return ErrPayoutLabelRequired
+	}
+	return nil
+}
 
 // checkPayoutMinimum applies the gateway's minimum rules locally so a request the
 // gateway would refuse is never sent: a blank figure is minimum_required, a figure
@@ -163,7 +177,12 @@ type CreatePayoutDestinationRequest struct {
 	Token Address `json:"token"`
 	// The venue's deposit address.
 	Address Address `json:"address"`
-	Label   string  `json:"label,omitempty"`
+	// The destination's name, REQUIRED and unique within the account (compared
+	// case-insensitively, after trimming; a deleted destination frees its label). Always
+	// sent: a blank one is refused before any request (ErrPayoutLabelRequired, gateway
+	// 422 label_required); one another live destination of the account already has is
+	// 409 payout_destination_label_taken.
+	Label string `json:"label"`
 	// The venue's deposit minimum in base units (digits only, below 2^120), read from its
 	// deposit page. A payout below it is refused (payout_below_minimum) and the proof is
 	// raised to it. EXACTLY ONE of MinAmount and NoMinimum=true is required; the SDK never
@@ -193,12 +212,18 @@ type CreatePayoutDestinationRequest struct {
 // gateway knows on that chain (payout_destination_zero_address, _own_wallet,
 // _is_contract); invalid_amount for a malformed MinAmount;
 // minimum_required / minimum_conflict for the minimum; confirmation_required when
-// ConfirmDetails is false. 409 payout_destination_exists when the wallet already has
-// a destination for this token and chain (one per payment method).
+// ConfirmDetails is false; label_required for a blank Label. 409
+// payout_destination_exists when the wallet already has a destination for this token and
+// chain (one per payment method); 409 payout_destination_label_taken when another live
+// destination of the account already has this label (case-insensitive).
 //
-// The minimum is checked before any request: neither MinAmount nor NoMinimum (or a
-// blank MinAmount) is ErrPayoutMinimumRequired, both is ErrPayoutMinimumConflict.
+// Checked before any request: a blank Label is ErrPayoutLabelRequired; neither MinAmount
+// nor NoMinimum (or a blank MinAmount) is ErrPayoutMinimumRequired, both is
+// ErrPayoutMinimumConflict.
 func (s *PayoutDestinationsService) Create(ctx context.Context, req CreatePayoutDestinationRequest) (*PayoutDestination, error) {
+	if err := checkPayoutLabel(&req.Label); err != nil {
+		return nil, err
+	}
 	if err := checkPayoutMinimum(req.MinAmount, req.NoMinimum, true); err != nil {
 		return nil, err
 	}
@@ -228,6 +253,9 @@ func getPayoutDestination(ctx context.Context, h *httpClient, id string) (*Payou
 // UpdatePayoutDestinationRequest holds the fields PayoutDestinations.Update may change.
 // A nil pointer leaves the field as it is.
 type UpdatePayoutDestinationRequest struct {
+	// A new name: never blank (a pointer to an empty or whitespace-only string is
+	// ErrPayoutLabelRequired before any request, gateway 422 label_required) and unique
+	// within the account like on Create (409 payout_destination_label_taken).
 	Label *string `json:"label,omitempty"`
 	// The venue's deposit minimum, base units; setting it also clears NoMinimum. A pointer
 	// to "" is refused before any request (ErrPayoutMinimumRequired): NoMinimum=true is
@@ -266,6 +294,9 @@ type UpdatePayoutDestinationRequest struct {
 // payout_already_signed (resend it or let it settle, then disable). A deactivated
 // account is read-only: every change is 403 account_deactivated.
 func (s *PayoutDestinationsService) Update(ctx context.Context, id string, req UpdatePayoutDestinationRequest) (*PayoutDestination, error) {
+	if err := checkPayoutLabel(req.Label); err != nil {
+		return nil, err
+	}
 	if err := checkPayoutMinimum(req.MinAmount, req.NoMinimum, false); err != nil {
 		return nil, err
 	}
@@ -292,7 +323,8 @@ func (s *PayoutDestinationsService) Confirm(ctx context.Context, id string) (*Pa
 // Delete soft-deletes a payout destination (DELETE /payout_destinations/{id}) and
 // returns it with DeletedAt set and Status "disabled". The row is kept — its payouts and
 // audit trail still name it, Get and Events still read it — but List leaves it out
-// (unless IncludeDeleted) and its address may be registered again.
+// (unless IncludeDeleted), its address may be registered again and its label is free for
+// another destination of the account.
 //
 // Its pending payout is settled first, as on a switch-off: an unsigned one fails
 // "cancelled", a signed one refuses the delete with 409 payout_already_signed (resend it

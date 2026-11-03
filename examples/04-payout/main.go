@@ -54,8 +54,8 @@ func main() {
 		ChainID:        5042002,                                      // the network the venue issued the address for
 		Token:          "0x3600000000000000000000000000000000000000", // USDC on that chain
 		Address:        "0xVenueDepositAddress0000000000000000000000",
-		Label:          "Exchange EUR",
-		MinAmount:      &minAmount, // the venue's deposit minimum, base units — or NoMinimum: true when it has none
+		Label:          "Exchange EUR", // required, unique within the account
+		MinAmount:      &minAmount,     // the venue's deposit minimum, base units — or NoMinimum: true when it has none
 		ConfirmDetails: confirmed,
 	})
 	if err != nil {

@@ -658,12 +658,18 @@ dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestination
     ChainID:        5042002,               // the network the venue issued the address for
     Token:          "0x3600000000000000000000000000000000000000",
     Address:        "0x…",                 // the venue's deposit address
-    Label:          "Kraken EUR",
+    Label:          "Kraken EUR",          // required, unique within the account
     MinAmount:      &minAmount,            // the venue's deposit minimum, base units — or NoMinimum: true
     ConfirmDetails: merchantConfirmed,     // true only after the merchant accepted the text above
 })
 // dest.Status == "unverified"
 ```
+
+Every destination has a **name**: `Label` is required and unique within the account
+(compared ignoring case, after trimming). A blank one returns `rail0.ErrPayoutLabelRequired`
+before any request (gateway `422 label_required`); a label another live destination of the
+account already has is `409 payout_destination_label_taken`. Deleting a destination frees
+its label.
 
 The venue's minimum deposit is a **required answer**: either `MinAmount` (base units, read
 from its deposit page; `"0"` is a figure like any other) or `NoMinimum: true` when the
@@ -776,6 +782,8 @@ to the base units it scales from the public token catalog. A refusal is an error
 ### Editing a destination, lists and audit trail
 
 ```go
+// A new label is never blank (ErrPayoutLabelRequired, before any request) and unique
+// within the account (409 payout_destination_label_taken).
 label := "Kraken EUR (main)"
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Label: &label})
 
@@ -792,7 +800,8 @@ off := false // any wallet of the account may disable; only the destination's ow
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Active: &off})
 
 // Soft delete (only the destination's own wallet): it leaves the lists and frees its
-// payment method (one destination per token and chain) for another address; Get and Events still read it, with DeletedAt set and Status "disabled". A
+// payment method (one destination per token and chain) for another address and its
+// label for another destination; Get and Events still read it, with DeletedAt set and Status "disabled". A
 // signed pending payout refuses it (409 payout_already_signed).
 dest, _ = client.PayoutDestinations.Delete(ctx, dest.ID)
 

@@ -211,6 +211,8 @@ var errorHints = map[string]string{
 	"payout_destination_unverified":    "the destination is not verified yet — send the proof (purpose proof), wait for the venue to credit it, then confirm the destination",
 	"payout_destination_disabled":      "the destination is disabled — re-enable it (Update with Active=true) or use another one",
 	"payout_destination_proof_missing": "there is no confirmed proof transfer yet — prepare and submit the proof, wait for it to confirm, then confirm the destination",
+	"label_required":                   "name the destination: label is required and may not be blank",
+	"payout_destination_label_taken":   "another destination of this account already has this label (compared ignoring case) — choose another one, or delete that destination to free it",
 	"payout_destination_exists":        "this payment method (token and chain) already has a destination — one per method; delete it to register another address",
 	"payout_destination_zero_address":  "the deposit address is the zero address — copy the address from the venue's deposit page",
 	"payout_destination_own_wallet":    "the deposit address is the paying wallet itself — use the venue's deposit address",

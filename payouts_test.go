@@ -343,8 +343,9 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		}
 	}
 
-	base := CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, ConfirmDetails: true}
+	base := CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, Label: "Kraken", ConfirmDetails: true}
 	blank, figure := Uint256String(""), Uint256String("11000000")
+	withLabel := func(l string) CreatePayoutDestinationRequest { r := base; r.NoMinimum = true; r.Label = l; return r }
 
 	// Exactly one of MinAmount / NoMinimum, never defaulted: refused locally, nothing sent.
 	for name, tc := range map[string]struct {
@@ -354,6 +355,10 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		"neither": {base, ErrPayoutMinimumRequired},
 		"blank":   {func() CreatePayoutDestinationRequest { r := base; r.MinAmount = &blank; return r }(), ErrPayoutMinimumRequired},
 		"both":    {func() CreatePayoutDestinationRequest { r := base; r.MinAmount = &figure; r.NoMinimum = true; return r }(), ErrPayoutMinimumConflict},
+		// The label is required: empty or whitespace-only is label_required, checked first.
+		"no label":                {withLabel(""), ErrPayoutLabelRequired},
+		"blank label":             {withLabel(" \t "), ErrPayoutLabelRequired},
+		"no label and no minimum": {func() CreatePayoutDestinationRequest { r := base; r.Label = ""; return r }(), ErrPayoutLabelRequired},
 	} {
 		if _, err := c.PayoutDestinations.Create(ctx, tc.req); !errors.Is(err, tc.want) {
 			t.Fatalf("create %s: err = %v, want %v", name, err, tc.want)
@@ -363,8 +368,11 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		t.Fatalf("refused creates must send nothing, sent %d request(s)", len(got))
 	}
 
-	_, err := c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, NoMinimum: true})
+	_, err := c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, Label: "Kraken", NoMinimum: true})
 	must(err)
+	if got[0].body["label"] != "Kraken" {
+		t.Errorf("create must send the label: %s", got[0].raw)
+	}
 	if v, present := got[0].body["confirm_details"]; !present || v != false {
 		t.Errorf("create without confirmation must SEND confirm_details=false (never default it): %s", got[0].raw)
 	}
@@ -388,6 +396,11 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 	must(err)
 	if got[2].method != http.MethodPatch || got[2].raw != `{"label":"Kraken"}` {
 		t.Errorf("label-only update = %s %s", got[2].method, got[2].raw)
+	}
+	for _, l := range []string{"", "   "} {
+		if _, err := c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{Label: &l}); !errors.Is(err, ErrPayoutLabelRequired) {
+			t.Fatalf("update with Label %q: err = %v, want ErrPayoutLabelRequired", l, err)
+		}
 	}
 	if _, err := c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{MinAmount: &blank, ConfirmDetails: true}); !errors.Is(err, ErrPayoutMinimumRequired) {
 		t.Fatalf(`update with MinAmount "": err = %v, want ErrPayoutMinimumRequired`, err)
@@ -548,6 +561,7 @@ func TestPayoutWebhookTopicsAndHints(t *testing.T) {
 		"payout_destination_proof_missing", "payout_already_signed", "payout_not_pending", "payout_not_signed",
 		"payout_hash_in_use", "payout_limit_reached", "insufficient_balance", "account_deactivated",
 		"foreign_transfer_hash", "transaction_mismatch", "minimum_required", "minimum_conflict",
+		"label_required", "payout_destination_label_taken", "payout_destination_exists",
 	} {
 		if DescribeError(code) == "" {
 			t.Errorf("no hint for %s", code)
