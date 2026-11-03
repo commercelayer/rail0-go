@@ -55,7 +55,6 @@ func main() {
 		Token:          "0x3600000000000000000000000000000000000000", // USDC on that chain
 		Address:        "0xVenueDepositAddress0000000000000000000000",
 		Label:          "Exchange EUR",
-		Kind:           rail0.PayoutDestinationKindExchange,
 		MinAmount:      &minAmount, // the venue's deposit minimum, base units — or NoMinimum: true when it has none
 		ConfirmDetails: confirmed,
 	})

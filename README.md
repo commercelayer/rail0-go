@@ -659,7 +659,6 @@ dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestination
     Token:          "0x3600000000000000000000000000000000000000",
     Address:        "0x…",                 // the venue's deposit address
     Label:          "Kraken EUR",
-    Kind:           rail0.PayoutDestinationKindExchange,
     MinAmount:      &minAmount,            // the venue's deposit minimum, base units — or NoMinimum: true
     ConfirmDetails: merchantConfirmed,     // true only after the merchant accepted the text above
 })

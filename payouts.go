@@ -69,15 +69,6 @@ const (
 	PayoutDestinationStatusDisabled   = "disabled"
 )
 
-// Payout destination kinds (CreatePayoutDestinationRequest.Kind). Informational: the
-// gateway treats every kind the same.
-const (
-	PayoutDestinationKindExchange    = "exchange"
-	PayoutDestinationKindCircleMint  = "circle_mint"
-	PayoutDestinationKindSelfCustody = "self_custody"
-	PayoutDestinationKindProvider    = "provider"
-)
-
 // The text a merchant confirms when registering a destination, or when changing its
 // minimum (ConfirmDetails on CreatePayoutDestinationRequest / UpdatePayoutDestinationRequest).
 // The gateway records the version — never the text — in the destination.created /
@@ -173,8 +164,6 @@ type CreatePayoutDestinationRequest struct {
 	// The venue's deposit address.
 	Address Address `json:"address"`
 	Label   string  `json:"label,omitempty"`
-	// One of the PayoutDestinationKind* constants; empty = "exchange".
-	Kind string `json:"kind,omitempty"`
 	// The venue's deposit minimum in base units (digits only, below 2^120), read from its
 	// deposit page. A payout below it is refused (payout_below_minimum) and the proof is
 	// raised to it. EXACTLY ONE of MinAmount and NoMinimum=true is required; the SDK never
