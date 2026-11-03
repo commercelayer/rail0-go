@@ -194,7 +194,7 @@ type CreatePayoutDestinationRequest struct {
 // _is_contract); invalid_amount for a malformed MinAmount;
 // minimum_required / minimum_conflict for the minimum; confirmation_required when
 // ConfirmDetails is false. 409 payout_destination_exists when the wallet already has
-// this address for this token and chain.
+// a destination for this token and chain (one per payment method).
 //
 // The minimum is checked before any request: neither MinAmount nor NoMinimum (or a
 // blank MinAmount) is ErrPayoutMinimumRequired, both is ErrPayoutMinimumConflict.

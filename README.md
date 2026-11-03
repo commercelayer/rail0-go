@@ -792,7 +792,7 @@ off := false // any wallet of the account may disable; only the destination's ow
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Active: &off})
 
 // Soft delete (only the destination's own wallet): it leaves the lists and frees its
-// address; Get and Events still read it, with DeletedAt set and Status "disabled". A
+// payment method (one destination per token and chain) for another address; Get and Events still read it, with DeletedAt set and Status "disabled". A
 // signed pending payout refuses it (409 payout_already_signed).
 dest, _ = client.PayoutDestinations.Delete(ctx, dest.ID)
 
