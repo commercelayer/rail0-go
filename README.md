@@ -97,7 +97,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Accounts` | The merchant account's own profile: read and update (JWT) |
 | `client.Analytics` | Merchant sales analytics (JWT + account) |
 | `client.Webhooks` | Webhook subscription management (JWT) |
-| `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit (JWT) |
+| `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit, delete, reserves (JWT) |
 | `client.Payouts` | Merchant cash-out transfers: prepare, verify, sign, submit (JWT) |
 
 Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
@@ -652,18 +652,33 @@ explicit agreement:
 > the venue's minimum, may be permanently lost and cannot be recovered by rail0.
 
 ```go
+minAmount := rail0.Uint256String("11000000") // from the venue's deposit page
 dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestinationRequest{
     WalletID:       walletID,              // the session's own wallet (uuid or address)
     ChainID:        5042002,               // the network the venue issued the address for
     Token:          "0x3600000000000000000000000000000000000000",
     Address:        "0x…",                 // the venue's deposit address
-    Label:          "Kraken EUR",
-    Kind:           rail0.PayoutDestinationKindExchange,
-    MinAmount:      "11000000",            // the venue's deposit minimum, base units (optional)
+    Label:          "Kraken EUR",          // required, unique within the account
+    MinAmount:      &minAmount,            // the venue's deposit minimum, base units — or NoMinimum: true
     ConfirmDetails: merchantConfirmed,     // true only after the merchant accepted the text above
 })
 // dest.Status == "unverified"
 ```
+
+Every destination has a **name**: `Label` is required and unique within the account
+(compared ignoring case, after trimming). A blank one returns `rail0.ErrPayoutLabelRequired`
+before any request (gateway `422 label_required`); a label another live destination of the
+account already has is `409 payout_destination_label_taken`. Deleting a destination frees
+its label.
+
+The venue's minimum deposit is a **required answer**: either `MinAmount` (base units, read
+from its deposit page; `"0"` is a figure like any other) or `NoMinimum: true` when the
+venue has none — exactly one, and the SDK never picks for you. `Create` checks it before
+any request: neither, or a `MinAmount` pointing to `""`, returns
+`rail0.ErrPayoutMinimumRequired` (gateway `422 minimum_required`); both returns
+`rail0.ErrPayoutMinimumConflict` (`422 minimum_conflict`). The destination reports it as
+`MinAmount` / `NoMinimum`; both empty means a destination registered before the minimum
+was asked, which still works and can be completed with `Update`.
 
 ### 2. Prove the address, then confirm it
 
@@ -685,11 +700,35 @@ dest, err = client.PayoutDestinations.Confirm(ctx, dest.ID) // now "verified"
 ### 3. Pay out: prepare → verify → sign → submit
 
 `Amount` is a human decimal (`"125.50"`), or `rail0.PayoutAmountAll` for the wallet's
-balance minus the **refund reserve** — the destination's `ReserveAmount`, or by default
-its `SuggestedReserve` (the refundable balance of the wallet's payments still inside
-their refund window: a refund pulls from the payee wallet, so an emptied wallet fails
-its next refund). A payout below the destination's `MinAmount` is refused
-(`payout_below_minimum`), at prepare and again at submit.
+balance minus the **reserves kept back**. They are decided at payout time, and both are
+kept by default:
+
+- the **refund reserve** — the refundable balance of the wallet's payments in this token
+  still inside their refund window (a refund pulls from the payee wallet, so an emptied
+  wallet fails its next refund);
+- the **gas reserve** — only on a chain whose gas is paid in this very token (Arc's USDC):
+  the gas for those refunds and for the captures the wallet still owes. On such a chain
+  the transfer's own gas allowance is kept back too.
+
+`KeepRefundReserve` / `KeepGasReserve` set to `false` opt out of one for this payout only
+— a later refund (or, without the gas reserve, a later capture) may then fail for lack of
+funds. The payout records what it kept back (`RefundReserve`, `GasReserve`).
+`PayoutDestinations.Reserves` shows the figures beforehand, with `Available` = what
+`PayoutAmountAll` moves with both kept. A payout below the destination's `MinAmount` is
+refused (`payout_below_minimum`), at prepare and again at submit.
+
+```go
+r, _ := client.PayoutDestinations.Reserves(ctx, dest.ID)
+fmt.Println(r.BalanceFormatted, r.RefundReserveFormatted, r.GasReserveFormatted, r.AvailableFormatted)
+
+// Move everything except the gas reserve, keeping nothing back for refunds.
+no := false
+payout, err := client.Payouts.PrepareAndSubmit(ctx, rail0.PreparePayoutRequest{
+    DestinationID:     dest.ID,
+    Amount:            rail0.PayoutAmountAll,
+    KeepRefundReserve: &no,
+}, key)
+```
 
 ```go
 // One call: prepare, verify the transfer, sign it with the key, submit (the gateway broadcasts).
@@ -743,11 +782,15 @@ to the base units it scales from the public token catalog. A refusal is an error
 ### Editing a destination, lists and audit trail
 
 ```go
+// A new label is never blank (ErrPayoutLabelRequired, before any request) and unique
+// within the account (409 payout_destination_label_taken).
 label := "Kraken EUR (main)"
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Label: &label})
 
 // Changing the minimum needs the same confirmation; raising it above the latest proof
-// takes the verification away (send a new proof at the new minimum).
+// takes the verification away (send a new proof at the new minimum). NoMinimum: true
+// removes the minimum; "" is refused (ErrPayoutMinimumRequired), and MinAmount together
+// with NoMinimum is ErrPayoutMinimumConflict, both before any request.
 minimum := rail0.Uint256String("15000000")
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{
     MinAmount: &minimum, ConfirmDetails: merchantConfirmed,
@@ -756,7 +799,14 @@ dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDesti
 off := false // any wallet of the account may disable; only the destination's own re-enables
 dest, _ = client.PayoutDestinations.Update(ctx, dest.ID, rail0.UpdatePayoutDestinationRequest{Active: &off})
 
+// Soft delete (only the destination's own wallet): it leaves the lists and frees its
+// payment method (one destination per token and chain) for another address and its
+// label for another destination; Get and Events still read it, with DeletedAt set and Status "disabled". A
+// signed pending payout refuses it (409 payout_already_signed).
+dest, _ = client.PayoutDestinations.Delete(ctx, dest.ID)
+
 dests, _ := client.PayoutDestinations.List(ctx, rail0.ListPayoutDestinationsParams{Status: "verified"})
+all, _ := client.PayoutDestinations.List(ctx, rail0.ListPayoutDestinationsParams{IncludeDeleted: true})
 page, _ := client.Payouts.List(ctx, rail0.ListPayoutsParams{
     DestinationID: dest.ID,
     Statuses:      []string{rail0.PayoutStatusPending, rail0.PayoutStatusSubmitted},
@@ -1258,8 +1308,9 @@ go build ./...
 > ```
 >
 > The client method files (`auth.go`, `accounts.go`, `payments.go`, `disputes.go`, `wallets.go`,
-> `payment_methods.go`, `webhooks.go`, `analytics.go`, `health.go`, `chains.go`, `tokens.go`),
-> the signing helpers (`signing.go`, `transaction.go`), and the stablecoin
+> `payment_methods.go`, `webhooks.go`, `payouts.go`, `analytics.go`, `health.go`, `chains.go`,
+> `tokens.go`), the signing helpers and pre-sign checks (`signing.go`, `transaction.go`,
+> `tx_verify.go`), and the stablecoin
 > registry (`stablecoins.go`) are hand-maintained and never overwritten by the
 > generator.
 

@@ -47,14 +47,15 @@ func main() {
 		log.Fatal("not confirmed: nothing registered")
 	}
 
+	// The venue's minimum deposit is a required answer: a figure, or NoMinimum: true.
+	minAmount := rail0.Uint256String("11000000")
 	dest, err := client.PayoutDestinations.Create(ctx, rail0.CreatePayoutDestinationRequest{
 		WalletID:       wallet,
 		ChainID:        5042002,                                      // the network the venue issued the address for
 		Token:          "0x3600000000000000000000000000000000000000", // USDC on that chain
 		Address:        "0xVenueDepositAddress0000000000000000000000",
-		Label:          "Exchange EUR",
-		Kind:           rail0.PayoutDestinationKindExchange,
-		MinAmount:      "11000000", // the venue's deposit minimum, base units (optional)
+		Label:          "Exchange EUR", // required, unique within the account
+		MinAmount:      &minAmount,     // the venue's deposit minimum, base units — or NoMinimum: true when it has none
 		ConfirmDetails: confirmed,
 	})
 	if err != nil {
@@ -83,7 +84,15 @@ func main() {
 	fmt.Printf("Destination %s: %s\n", dest.ID, dest.Status)
 
 	// 3. The payout. Amount is a human decimal, or rail0.PayoutAmountAll for the
-	// balance minus the refund reserve.
+	// balance minus the reserves kept back (decided now, both kept by default: the
+	// refund reserve and, on a chain whose gas is this very token, the gas reserve).
+	reserves, err := client.PayoutDestinations.Reserves(ctx, dest.ID)
+	if err != nil {
+		log.Fatalf("PayoutDestinations.Reserves: %v", err)
+	}
+	fmt.Printf("Balance %s %s: refund reserve %s (%d payments), gas reserve %s, available %s\n",
+		reserves.BalanceFormatted, reserves.TokenSymbol, reserves.RefundReserveFormatted,
+		reserves.RefundablePayments, reserves.GasReserveFormatted, reserves.AvailableFormatted)
 	payout, err := client.Payouts.PrepareAndSubmit(ctx, rail0.PreparePayoutRequest{
 		DestinationID: dest.ID,
 		Amount:        "125.50",

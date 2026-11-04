@@ -3,6 +3,7 @@ package rail0
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -342,15 +343,52 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		}
 	}
 
-	_, err := c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest})
+	base := CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, Label: "Kraken", ConfirmDetails: true}
+	blank, figure := Uint256String(""), Uint256String("11000000")
+	withLabel := func(l string) CreatePayoutDestinationRequest { r := base; r.NoMinimum = true; r.Label = l; return r }
+
+	// Exactly one of MinAmount / NoMinimum, never defaulted: refused locally, nothing sent.
+	for name, tc := range map[string]struct {
+		req  CreatePayoutDestinationRequest
+		want error
+	}{
+		"neither": {base, ErrPayoutMinimumRequired},
+		"blank":   {func() CreatePayoutDestinationRequest { r := base; r.MinAmount = &blank; return r }(), ErrPayoutMinimumRequired},
+		"both":    {func() CreatePayoutDestinationRequest { r := base; r.MinAmount = &figure; r.NoMinimum = true; return r }(), ErrPayoutMinimumConflict},
+		// The label is required: empty or whitespace-only is label_required, checked first.
+		"no label":                {withLabel(""), ErrPayoutLabelRequired},
+		"blank label":             {withLabel(" \t "), ErrPayoutLabelRequired},
+		"no label and no minimum": {func() CreatePayoutDestinationRequest { r := base; r.Label = ""; return r }(), ErrPayoutLabelRequired},
+	} {
+		if _, err := c.PayoutDestinations.Create(ctx, tc.req); !errors.Is(err, tc.want) {
+			t.Fatalf("create %s: err = %v, want %v", name, err, tc.want)
+		}
+	}
+	if len(got) != 0 {
+		t.Fatalf("refused creates must send nothing, sent %d request(s)", len(got))
+	}
+
+	_, err := c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, Label: "Kraken", NoMinimum: true})
 	must(err)
+	if got[0].body["label"] != "Kraken" {
+		t.Errorf("create must send the label: %s", got[0].raw)
+	}
 	if v, present := got[0].body["confirm_details"]; !present || v != false {
 		t.Errorf("create without confirmation must SEND confirm_details=false (never default it): %s", got[0].raw)
 	}
-	_, err = c.PayoutDestinations.Create(ctx, CreatePayoutDestinationRequest{WalletID: "w", ChainID: payoutChain, Token: payoutToken, Address: payoutDest, MinAmount: "11000000", ConfirmDetails: true})
+	if _, present := got[0].body["min_amount"]; present || got[0].body["no_minimum"] != true {
+		t.Errorf("create with NoMinimum must send no_minimum=true and no min_amount: %s", got[0].raw)
+	}
+	zero := Uint256String("0") // a figure like any other, not "none"
+	r := base
+	r.MinAmount = &zero
+	_, err = c.PayoutDestinations.Create(ctx, r)
 	must(err)
-	if got[1].body["confirm_details"] != true || got[1].body["min_amount"] != "11000000" {
+	if got[1].body["confirm_details"] != true || got[1].body["min_amount"] != "0" {
 		t.Errorf("create body = %s", got[1].raw)
+	}
+	if _, present := got[1].body["no_minimum"]; present {
+		t.Errorf("create with a figure must not send no_minimum: %s", got[1].raw)
 	}
 
 	label := "Kraken"
@@ -359,11 +397,29 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 	if got[2].method != http.MethodPatch || got[2].raw != `{"label":"Kraken"}` {
 		t.Errorf("label-only update = %s %s", got[2].method, got[2].raw)
 	}
-	minimum := Uint256String("")
-	_, err = c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{MinAmount: &minimum, ConfirmDetails: true})
+	for _, l := range []string{"", "   "} {
+		if _, err := c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{Label: &l}); !errors.Is(err, ErrPayoutLabelRequired) {
+			t.Fatalf("update with Label %q: err = %v, want ErrPayoutLabelRequired", l, err)
+		}
+	}
+	if _, err := c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{MinAmount: &blank, ConfirmDetails: true}); !errors.Is(err, ErrPayoutMinimumRequired) {
+		t.Fatalf(`update with MinAmount "": err = %v, want ErrPayoutMinimumRequired`, err)
+	}
+	if _, err := c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{MinAmount: &figure, NoMinimum: true, ConfirmDetails: true}); !errors.Is(err, ErrPayoutMinimumConflict) {
+		t.Fatalf("update with both: err = %v, want ErrPayoutMinimumConflict", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("refused updates must send nothing, %d requests so far", len(got))
+	}
+	_, err = c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{NoMinimum: true, ConfirmDetails: true})
 	must(err)
-	if got[3].raw != `{"min_amount":"","confirm_details":true}` {
-		t.Errorf("minimum update = %s", got[3].raw)
+	if got[3].raw != `{"no_minimum":true,"confirm_details":true}` {
+		t.Errorf("minimum removal = %s", got[3].raw)
+	}
+	_, err = c.PayoutDestinations.Update(ctx, payoutDestID, UpdatePayoutDestinationRequest{MinAmount: &figure, ConfirmDetails: true})
+	must(err)
+	if got[4].raw != `{"min_amount":"11000000","confirm_details":true}` {
+		t.Errorf("minimum update = %s", got[4].raw)
 	}
 
 	_, err = c.PayoutDestinations.Get(ctx, payoutDestID)
@@ -394,10 +450,20 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 	must(err)
 	_, err = c.Payouts.Prepare(ctx, PreparePayoutRequest{DestinationID: payoutDestID, Purpose: PayoutPurposeProof})
 	must(err)
+	no, yes := false, true
+	_, err = c.Payouts.Prepare(ctx, PreparePayoutRequest{DestinationID: payoutDestID, Amount: PayoutAmountAll, KeepRefundReserve: &no, KeepGasReserve: &yes})
+	must(err)
+	_, err = c.PayoutDestinations.Delete(ctx, payoutDestID)
+	must(err)
+	_, err = c.PayoutDestinations.Reserves(ctx, payoutDestID)
+	must(err)
+	_, err = c.PayoutDestinations.List(ctx, ListPayoutDestinationsParams{IncludeDeleted: true})
+	must(err)
 
 	want := []struct{ method, path, query, raw string }{
 		{"POST", "/payout_destinations", "", ""},
 		{"POST", "/payout_destinations", "", ""},
+		{"PATCH", "/payout_destinations/" + payoutDestID, "", ""},
 		{"PATCH", "/payout_destinations/" + payoutDestID, "", ""},
 		{"PATCH", "/payout_destinations/" + payoutDestID, "", ""},
 		{"GET", "/payout_destinations/" + payoutDestID, "", ""},
@@ -412,6 +478,10 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		{"POST", "/payouts/" + payoutID + "/resend", "", "{}"},
 		{"POST", "/payouts/" + payoutID + "/cancel", "", "{}"},
 		{"POST", "/payouts/prepare", "", `{"destination_id":"` + payoutDestID + `","purpose":"proof"}`},
+		{"POST", "/payouts/prepare", "", `{"destination_id":"` + payoutDestID + `","amount":"all","keep_refund_reserve":false,"keep_gas_reserve":true}`},
+		{"DELETE", "/payout_destinations/" + payoutDestID, "", ""},
+		{"GET", "/payout_destinations/" + payoutDestID + "/reserves", "", ""},
+		{"GET", "/payout_destinations", "include_deleted=true", ""},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("%d requests, want %d", len(got), len(want))
@@ -424,6 +494,55 @@ func TestPayoutRoutesAndBodies(t *testing.T) {
 		if w.raw != "" && g.raw != w.raw {
 			t.Errorf("request %d body = %s, want %s", i, g.raw, w.raw)
 		}
+	}
+}
+
+// The reserve opt-outs are omitted unless set: nil leaves the gateway default (kept),
+// so a plain prepare sends neither key.
+func TestPreparePayoutOmitsUnsetReserveFlags(t *testing.T) {
+	b, err := json.Marshal(PreparePayoutRequest{DestinationID: payoutDestID, Amount: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "keep_") {
+		t.Errorf("unset reserve flags must be omitted: %s", b)
+	}
+}
+
+func TestPayoutDestinationDeleteAndReservesDecode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete:
+			_, _ = w.Write([]byte(`{"id":"` + payoutDestID + `","status":"disabled","deleted_at":"2026-11-02T10:00:00Z"}`))
+		case strings.HasSuffix(r.URL.Path, "/reserves"):
+			_, _ = w.Write([]byte(`{"destination_id":"` + payoutDestID + `","chain_id":5042002,"token":"0x36","token_symbol":"USDC","decimals":6,` +
+				`"balance":"10000000","balance_formatted":"10.0","refund_reserve":"2000000","refund_reserve_formatted":"2.0","refundable_payments":3,` +
+				`"native_gas":true,"gas_reserve":"150000","gas_reserve_formatted":"0.15","gas_refunds":3,"open_authorizations":1,"base_captures":5,` +
+				`"gas_allowance":"20000","gas_allowance_formatted":"0.02","available":"7830000","available_formatted":"7.83"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := NewClient(ClientOptions{BaseURL: srv.URL, Token: "jwt"})
+	ctx := context.Background()
+
+	d, err := c.PayoutDestinations.Delete(ctx, payoutDestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.DeletedAt == "" || d.Status != PayoutDestinationStatusDisabled {
+		t.Errorf("deleted destination = %+v", d)
+	}
+	res, err := c.PayoutDestinations.Reserves(ctx, payoutDestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Available != "7830000" || res.RefundReserve != "2000000" || res.RefundablePayments != 3 ||
+		!res.NativeGas || res.GasReserve != "150000" || res.GasAllowance != "20000" ||
+		res.OpenAuthorizations != 1 || res.BaseCaptures != 5 || res.Decimals != 6 {
+		t.Errorf("reserves = %+v", res)
 	}
 }
 
@@ -441,7 +560,8 @@ func TestPayoutWebhookTopicsAndHints(t *testing.T) {
 		"confirmation_required", "payout_below_minimum", "payout_destination_unverified", "payout_destination_disabled",
 		"payout_destination_proof_missing", "payout_already_signed", "payout_not_pending", "payout_not_signed",
 		"payout_hash_in_use", "payout_limit_reached", "insufficient_balance", "account_deactivated",
-		"foreign_transfer_hash", "transaction_mismatch",
+		"foreign_transfer_hash", "transaction_mismatch", "minimum_required", "minimum_conflict",
+		"label_required", "payout_destination_label_taken", "payout_destination_exists",
 	} {
 		if DescribeError(code) == "" {
 			t.Errorf("no hint for %s", code)
