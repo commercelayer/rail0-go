@@ -286,7 +286,7 @@ git switch --quiet main
 # --- milestone branch: the pull requests merged into it are the release ---------------
 # The feature branch above was never merged; main still sits at the last tag plus #43.
 retag "v$bx.0.2"
-git switch --quiet -c release/next
+git switch --quiet -c milestone/next
 merge_into() { # NUMBER TITLE  (a pull request merged into the current branch)
   local here
   here="$(git symbolic-ref --short HEAD)"
@@ -297,7 +297,7 @@ merge_into() { # NUMBER TITLE  (a pull request merged into the current branch)
 }
 merge_into 50 "fix(keys): a clearer error"
 merge_into 51 "feat(config): per-environment settings"
-git push --quiet -u origin release/next
+git push --quiet -u origin milestone/next
 export FAKE_PR=$'60\tOPEN\tmain' FAKE_PR_TITLE="Next release" FAKE_PR_EDITED="$TMP/milestone.md"
 export FAKE_PR_BODY=$'Milestone: Next release.'
 out="$(run --dry-run)"

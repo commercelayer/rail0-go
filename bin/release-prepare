@@ -12,7 +12,7 @@
 #   - on a feature branch with an open pull request: bumps the version ON that branch and
 #     writes the notes into that pull request, so ONE approval covers the change and its
 #     release;
-#   - on a milestone branch (release/next, the usual way): change pull requests target it
+#   - on a milestone branch (milestone/next, the usual way): change pull requests target it
 #     and are merged into it by the developer, and its ONE pull request into main is the
 #     release. The pull requests merged into it decide the version and fill the notes.
 #
@@ -82,7 +82,7 @@ tags and announces it.
                    notes (what merged since the tag, plus this pull request) go into its
                    description, and its own title counts toward the bump. Re-run it after
                    new commits or a merge of main to refresh both.
-                   A MILESTONE branch (release/next) is the usual case: the pull requests
+                   A MILESTONE branch (milestone/next) is the usual case: the pull requests
                    merged into it are what it releases, so they decide the bump and fill
                    the notes, and the branch's own pull request title does not count.
 
