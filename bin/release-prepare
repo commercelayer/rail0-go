@@ -11,7 +11,10 @@
 #   - on main: opens a release-only pull request, chore/release-X.Y.Z;
 #   - on a feature branch with an open pull request: bumps the version ON that branch and
 #     writes the notes into that pull request, so ONE approval covers the change and its
-#     release.
+#     release;
+#   - on a milestone branch (release/next, the usual way): change pull requests target it
+#     and are merged into it by the developer, and its ONE pull request into main is the
+#     release. The pull requests merged into it decide the version and fill the notes.
 #
 # Nothing here publishes, tags or touches a registry: the only thing that can release is
 # an approved, merged pull request.
@@ -79,6 +82,9 @@ tags and announces it.
                    notes (what merged since the tag, plus this pull request) go into its
                    description, and its own title counts toward the bump. Re-run it after
                    new commits or a merge of main to refresh both.
+                   A MILESTONE branch (release/next) is the usual case: the pull requests
+                   merged into it are what it releases, so they decide the bump and fill
+                   the notes, and the branch's own pull request title does not count.
 
   (no argument)    the version is computed from the pull requests merged since the
                    latest v* tag (Conventional Commits): a breaking change ("!" after
@@ -272,7 +278,19 @@ fi
 list_merged_prs() {
   local range="origin/main"
   [ -n "$last_tag" ] && range="$last_tag..origin/main"
-  git log --first-parent --format='%s%x1f%b%x1e' "$range" | awk -v RS='\036' -v FS='\037' '
+  list_prs_in "$range"
+}
+
+# A milestone branch: the pull requests merged INTO it (its own first-parent history above
+# main) are what it releases, next to what main already holds since the tag. A merge of
+# main into the branch ("Merge branch 'main'…") and the release bump commit are left out
+# like everywhere else.
+list_branch_prs() {
+  list_prs_in "origin/main..HEAD"
+}
+
+list_prs_in() { # RANGE
+  git log --first-parent --format='%s%x1f%b%x1e' "$1" | awk -v RS='\036' -v FS='\037' '
     {
       sub(/^\n+/, "", $1); subject = $1; body = $2
       sub(/^\n+/, "", body); split(body, lines, "\n"); first = lines[1]
@@ -306,10 +324,18 @@ added="" changed="" fixed="" removed=""
 bump="" bump_why=""
 cc_re='^([A-Za-z]+)(\(([^)]*)\))?(!)?:[[:space:]]*(.*)$'
 prs="$(list_merged_prs | sort -n)"
-# On a branch, its own pull request is part of the release: its title counts toward the
-# bump and gets a line in the notes, like a merged one ("!" or a BREAKING CHANGE footer in
-# its description make it breaking).
-if [ "$mode" = branch ]; then
+# On a branch, the pull requests merged into it count like main's (a milestone branch:
+# the developer merges into it what goes into the release, and its one pull request into
+# main needs one approval). A branch with none merged into it is a feature branch: its own
+# pull request is the release, so ITS title counts toward the bump and gets a line in the
+# notes ("!" or a BREAKING CHANGE footer in its description make it breaking).
+branch_prs=""
+# Only merged pull requests (a line with a number): a feature branch's own commits, a merge
+# of main and the release bump commit have none.
+[ "$mode" = branch ] && branch_prs="$(list_branch_prs | grep -E '^[0-9]+' || true)"
+if [ -n "$branch_prs" ]; then
+  prs="${prs}"$'\n'"${branch_prs}"
+elif [ "$mode" = branch ]; then
   pr_breaking=""
   case "$pr_body_now" in "BREAKING CHANGE:"* | *$'\n'"BREAKING CHANGE:"* | "BREAKING-CHANGE:"* | *$'\n'"BREAKING-CHANGE:"*) pr_breaking="!" ;; esac
   prs="${prs}"$'\n'"${pr_number}"$'\037'"${pr_title_now}"$'\037'"${pr_breaking}"

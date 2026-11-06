@@ -1318,6 +1318,17 @@ go build ./...
 
 A release is an approved pull request: merging it is what tags the module.
 
+**Pull requests do not target `main` one by one: they go into a milestone.** The next
+release has a GitHub milestone ("Next release") and a branch, `release/next`, cut from
+`main`. Change pull requests target `release/next` and carry the milestone; CI runs on
+them, and the developer merges into the branch only what is meant to ship. One pull
+request, `release/next` → `main`, carries the release, so a single approval covers the
+whole milestone. Run `bin/release-prepare` on `release/next` (clean, pushed, containing
+`origin/main`, its pull request into `main` open): the pull requests merged into the
+branch decide the version and fill the notes, together with anything merged on `main`
+since the last tag. After the release merges, delete `release/next`, cut it again from
+`main` and move the open milestone's pull requests onto it.
+
 1. `bin/release-prepare`, on an up-to-date, clean `main`. It computes the version from the titles of the pull requests merged since the last tag
    (Conventional Commits): a breaking change — `!` after the type, as in `feat(api)!:`, or a
    `BREAKING CHANGE:` footer — makes it a major, any `feat` a minor, anything else a patch,
