@@ -283,6 +283,37 @@ FAKE_PR=$'42\tCLOSED\tmain' expect_contains "branch: refuses a closed pull reque
 unset FAKE_PR FAKE_PR_TITLE FAKE_PR_BODY FAKE_PR_EDITED
 git switch --quiet main
 
+# --- milestone branch: the pull requests merged into it are the release ---------------
+# The feature branch above was never merged; main still sits at the last tag plus #43.
+retag "v$bx.0.2"
+git switch --quiet -c milestone/next
+merge_into() { # NUMBER TITLE  (a pull request merged into the current branch)
+  local here
+  here="$(git symbolic-ref --short HEAD)"
+  git switch --quiet -c "pr-$1"
+  echo "$1" >>changes.txt && git add changes.txt && git commit --quiet -m "work for #$1"
+  git switch --quiet "$here"
+  git merge --quiet --no-ff "pr-$1" -m "Merge pull request #$1 from example/pr-$1" -m "$2"
+}
+merge_into 50 "fix(keys): a clearer error"
+merge_into 51 "feat(config): per-environment settings"
+git push --quiet -u origin milestone/next
+export FAKE_PR=$'60\tOPEN\tmain' FAKE_PR_TITLE="Next release" FAKE_PR_EDITED="$TMP/milestone.md"
+export FAKE_PR_BODY=$'Milestone: Next release.'
+out="$(run --dry-run)"
+expect_contains "milestone: a feat merged into it makes it minor" "$out" "-> v$bx.1.0"
+expect_contains "milestone: its merged feat is in the notes" "$out" "- **config:** per-environment settings (#51)"
+expect_contains "milestone: its merged fix is in the notes" "$out" "- **keys:** a clearer error (#50)"
+expect_absent "milestone: its own title is not a change" "$out" "Next release (#60)"
+out="$(run)"
+expect_contains "milestone: real run updates its pull request" "$out" "pull request #60 now releases v$bx.1.0"
+FAKE_PR_BODY="$(cat "$FAKE_PR_EDITED")" FAKE_PR_TITLE="$(cat "$FAKE_PR_EDITED.title")"
+out="$(run)"
+expect_contains "milestone: re-run leaves the version alone" "$out" "already carries $bx.1.0"
+expect_absent "milestone: the bump commit is not a change" "$(cat "$FAKE_PR_EDITED")" "chore(release)"
+unset FAKE_PR FAKE_PR_TITLE FAKE_PR_BODY FAKE_PR_EDITED
+git switch --quiet main
+
 echo
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)"

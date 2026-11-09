@@ -258,8 +258,10 @@ func (s *PaymentsService) Get(ctx context.Context, paymentID Bytes32) (*Payment,
 // is deactivated. It is allowed in any status, since the description is
 // off-chain metadata and never touches the escrow.
 //
-// req.Description == nil (sent as JSON null) or a pointer to "" clears the
-// description; anything else replaces it, up to 255 characters (422 above that).
+// A pointer to "" clears the description; any other value replaces it, up to 255
+// characters (422 above that). A nil Description is not sent at all (every field of
+// UpdatePaymentRequest is omitempty), so it leaves the description untouched — and a
+// request naming no field is refused 400 validation_failed.
 func (s *PaymentsService) Update(ctx context.Context, paymentID Bytes32, req UpdatePaymentRequest) (*Payment, error) {
 	var out Payment
 	if err := s.http.patch(ctx, pathf("/payments/%s", paymentID), req, &out); err != nil {
