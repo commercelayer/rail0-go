@@ -110,7 +110,7 @@ func TestDescribeErrorCoversTheGatewayCodes(t *testing.T) {
 		"payer_must_be_caller", "not_redrivable", "last_active_wallet", "last_admin",
 		"not_your_wallet", "wallet_add_unavailable",
 		// the public onboarding codes of POST /signup and POST /claim
-		"signup_unavailable", "onboarding_unavailable", "email_provider_not_configured",
+		"onboarding_unavailable", "email_provider_not_configured",
 		"email_domain_not_allowed", "account_email_taken", "account_wallet_taken",
 		"account_name_taken", "terms_required", "onboarding_link_invalid",
 		"onboarding_link_expired", "onboarding_link_superseded",
