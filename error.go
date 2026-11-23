@@ -182,7 +182,6 @@ var errorHints = map[string]string{
 	// The /admin/onboardings codes (onboarding_not_found, onboarding_completed) are left
 	// out: those routes are the console's, not the SDK's. The link codes never say which
 	// term failed — a stale link has one remedy: the newest email, or a new link.
-	"signup_unavailable":            "self-service sign-up is switched off on this gateway for now — try again later, or ask your RAIL0 contact for an invite",
 	"onboarding_unavailable":        "this gateway has no onboarding secret configured, so it can neither issue nor verify sign-up links — ask the operator",
 	"email_provider_not_configured": "the gateway has no email provider that delivers, so no link was sent and nothing was saved — ask the operator to configure one",
 	"email_domain_not_allowed":      "this environment emails only its allowed domains (the detail lists them) — use an address on one of them; nothing was saved",
