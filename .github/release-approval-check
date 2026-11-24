@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# Who may approve a release pull request, and who did. The one rule for every rail0 repo
+# that releases: .github/workflows/release.yml runs it after the merge (no approval, no
+# release: nothing tagged, published or announced), and in the services
+# .github/workflows/release-approval.yml runs it before the merge (the commit status on
+# the pull request), so the two can never answer differently.
+#
+#   .github/release-approval-check <pr>      # GH_TOKEN and GITHUB_REPOSITORY from the env
+#
+# The approval must come from a reviewer who did NOT take part in the release, on the
+# pull request's final commit (an approval followed by a new push, a dismissal or a
+# change request does not count). Bots never count. Taking part means any of:
+#   - opening the release pull request;
+#   - authoring, committing or co-authoring (a Co-authored-by trailer with a GitHub
+#     noreply address) one of its commits; GitHub's own web-flow committer is not a
+#     person and is left out;
+#   - opening, or authoring, committing or co-authoring a commit of, a pull request
+#     merged into a milestone/* branch that one of its commits comes from (a squash
+#     merge hides the original commits; this finds them again).
+#
+# Prints key=value lines on stdout: author, head, contributors (space-separated,
+# lowercase), approvers (space-separated, empty when nobody qualifies). Exit 0 when the
+# check could be made, approved or not. Exit 2 when it cannot be made, with the reason on
+# stderr and as an `error=` line: a commit whose author or committer has no GitHub login
+# (nobody could be told apart from it), or 250 commits or more (GitHub lists no more).
+#
+# Shared, byte for byte, by rail0-gateway, rail0-indexer, rail0-admin, rail0-ts,
+# rail0-go, rail0-ruby and rail0-cli.
+set -euo pipefail
+shopt -s inherit_errexit 2>/dev/null || true # a failure inside $( ) stops the script too
+
+pr="${1:?usage: release-approval-check <pull request number>}"
+repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}"
+
+cannot() {
+  echo "error=$1"
+  echo "$1" >&2
+  exit 2
+}
+
+author="$(gh api "repos/$repo/pulls/$pr" --jq .user.login)"
+head="$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)"
+count="$(gh api "repos/$repo/pulls/$pr" --jq .commits)"
+[ "$count" -lt 250 ] ||
+  cannot "#$pr has $count commits: GitHub lists at most 250, so its contributors cannot all be checked"
+
+# One line per commit of a pull request: sha, author login, committer login, message
+# (newlines as spaces, so Co-authored-by trailers stay on the line), separated by US
+# (0x1f), which unlike a tab keeps an empty login as an empty field.
+us=$'\x1f'
+commits_of() {
+  gh api --paginate "repos/$repo/pulls/$1/commits" \
+    --jq '.[] | [.sha, (.author.login // ""), (.committer.login // ""), (.commit.message | gsub("[\\r\\n\\x1f]"; " "))] | join("\u001f")'
+}
+
+# The logins behind a pull request's commits. A commit without one makes the check
+# impossible: the marker line is turned into the exit-2 answer below.
+logins_of() {
+  commits_of "$1" | while IFS="$us" read -r sha a c msg; do
+    if [ -z "$a" ] || [ -z "$c" ]; then
+      echo "!nologin commit ${sha:0:7} (pull request #$1) has an author or committer with no GitHub login"
+      continue
+    fi
+    echo "$a"
+    [ "$c" = "web-flow" ] || echo "$c"
+    printf '%s\n' "$msg" | grep -oiE 'co-authored-by:[^<]*<[^>]+>' |
+      sed -nE 's/.*<([0-9]+\+)?([^@>]+)@users\.noreply\.github\.com>.*/\2/Ip' || true
+  done
+}
+
+all="$(
+  {
+    echo "$author"
+    logins_of "$pr"
+    # Pull requests merged into a milestone/* branch that the release commits come from.
+    for sha in $(commits_of "$pr" | cut -d "$us" -f1); do
+      gh api "repos/$repo/commits/$sha/pulls" \
+        --jq '.[] | select(.merged_at != null and (.base.ref | startswith("milestone/"))) | .number'
+    done | sort -u | while read -r n; do
+      [ "$n" = "$pr" ] && continue
+      gh api "repos/$repo/pulls/$n" --jq .user.login
+      logins_of "$n"
+    done
+  } | grep -v '^$'
+)"
+
+nologin="$(printf '%s\n' "$all" | sed -n 's/^!nologin //p' | head -n 1)"
+[ -z "$nologin" ] || cannot "$nologin: it cannot be told apart from the reviewer"
+contributors="$(printf '%s\n' "$all" | tr 'A-Z' 'a-z' | sort -u)"
+
+# Reviews come oldest first: the last non-comment state per reviewer is theirs.
+approvers="$(gh api --paginate "repos/$repo/pulls/$pr/reviews" \
+  --jq '.[] | [.user.login, .state, .commit_id] | @tsv' |
+  awk -F'\t' -v head="$head" -v list="$contributors" '
+    BEGIN { n = split(list, c, "\n"); for (i = 1; i <= n; i++) took[c[i]] = 1 }
+    $1 ~ /\[bot\]$/ || $2 == "COMMENTED" || $2 == "PENDING" { next }
+    { last[$1] = $2; at[$1] = $3 }
+    END { for (u in last) if (!(tolower(u) in took) && last[u] == "APPROVED" && at[u] == head) print u }' |
+  sort)"
+
+echo "author=$author"
+echo "head=$head"
+echo "contributors=$(echo $contributors)"
+echo "approvers=$(echo $approvers)"
