@@ -1348,8 +1348,9 @@ since the last tag. After the release merges, delete `milestone/next`, cut it ag
    and the notes instead of bumping twice. One approval then covers the change and its
    release.
 2. Review the pull request (edit the notes in its body if needed), approve and merge it.
-   The approval must come from a reviewer **other than the pull request's author**, on its
-   final commit: release.yml checks it before publishing anything and stops otherwise —
+   The approval must come from a reviewer **who neither opened the pull request nor wrote
+   any of its changes** (its commits, co-authored commits, and the pull requests merged
+   into the milestone), on its final commit: release.yml checks it before publishing anything and stops otherwise —
    an admin merge that bypassed the review, a direct push to `main` or a resume of an
    unapproved release publishes nothing.
 3. `.github/workflows/release.yml` runs on that push to `main`: CI again on the release
