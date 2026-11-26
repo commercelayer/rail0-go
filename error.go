@@ -91,7 +91,8 @@ var errorHints = map[string]string{
 	// The open and close lists differ (and full_refund is system-only), so the hint
 	// points at both rather than guessing which one the caller meant.
 	"unknown_dispute_reason":       "the reason must be a dispute-reason code (or its exact bytes32) from the right list — DisputeOpenReasons to open, DisputeCloseReasons to close",
-	"transaction_not_overwritable": "a transaction for this operation is already in flight — wait for it to settle",
+	"transaction_not_overwritable": "this operation's transaction is already confirmed — its hash cannot be replaced (a failed one can: report the hash again)",
+	"transaction_in_flight":        "the other party already has this operation's transaction signed or sent, and this session cannot replace it — wait a moment and prepare the operation again to get a transaction of your own",
 	"signer_mismatch":              "the signature recovers to a different wallet than the one that must sign — the payment's payer/payee, or at POST /claim the wallet the onboarding request names",
 	// The SIWE BINDING failures, split out of signer_mismatch so a failed login says
 	// WHICH part of the proof did not bind (rail0-gateway#216). None of these names the
@@ -168,7 +169,7 @@ var errorHints = map[string]string{
 	"no_active_contract":          "no active RAIL0 contract on that chain",
 	"missing_param":               "a required parameter is missing from the request",
 	"validation_failed":           "a parameter is invalid — the error detail names the offending field",
-	"rate_limited":                "rate limit reached — wait for Retry-After (the time left in the window) and retry, or set RetryOn429",
+	"rate_limited":                "too many requests, or too many of this payment's transactions still waiting to be confirmed — wait the Retry-After seconds and retry, or set RetryOn429",
 	"event_not_found":             "the reported transaction mined but did not perform this operation on this payment — nothing moved; check the hash and prepare the operation again",
 	"submission_timeout":          "the transaction was not mined in time and was recorded as failed — if it mines later, re-report its hash via the operation's submitted endpoint",
 	"token_not_accepted":          "this RAIL0 deployment does not accept that token — its allowlist is fixed at deploy time",
