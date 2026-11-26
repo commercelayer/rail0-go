@@ -99,6 +99,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Webhooks` | Webhook subscription management (JWT) |
 | `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit, delete, reserves (JWT) |
 | `client.Payouts` | Merchant cash-out transfers: prepare, verify, sign, submit (JWT) |
+| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, deliveries, disputes, audit log, write mode (JWT with the operator grant) |
 
 Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
 
@@ -186,7 +187,7 @@ The endpoint is public and token-blind: every caller gets the same body, whether
 not the client carries a session. `Status` is `"ok"`, `"degraded"` (database fine,
 workers not — the only thing that produces it) or `"error"` (database down, the
 only case that also returns HTTP 503). The worker-fleet detail is operator-only, on
-the gateway's `/admin/health`, and is not part of this SDK. On that 503, `Get` returns the
+the gateway's `/admin/health` ([`client.Admin.Health`](#operator-admin)). On that 503, `Get` returns the
 report **and** the `*APIError`: checking `err` alone still treats it as a failure, and the
 report says what failed (it used to be dropped, leaving an error that read "HTTP 503").
 
@@ -625,6 +626,67 @@ accounts, so one already taken answers `409` (`conflict`). A deactivated account
 signed-in wallet answers `403` `account_deactivated` / `wallet_deactivated`. The
 account's `active` flag is an operator action and is not exposed by the SDK; `priority_tip`
 is the owner's (or an admin's) and never touches the buyer's dispute/close_dispute gas.
+
+## Operator (admin)
+
+`client.Admin` is the operator's side of the gateway: the cross-account routes under
+`/admin`. It needs a session whose account holds the operator grant (`auth.Admin` is
+true after `Auth.Login`); any other session is answered `403` `forbidden`. The SDK
+otherwise tracks the public surface, and this is the deliberate exception: what an
+operator does from a terminal while something is wrong. Granting the operator role,
+onboarding and the catalogue stay with the console.
+
+```go
+// One verdict, then a named check per thing that can be wrong. Always 200: a degraded
+// system is the content, so read h.Status ("ok", "degraded", "error"), not err.
+h, _ := client.Admin.Health(ctx)
+rpc, _ := client.Admin.RPCHealth(ctx) // every active chain's endpoints, probed from the gateway
+
+// Transactions across every account, or only the stuck ones.
+stuck, _ := client.Admin.Transactions(ctx, rail0.ListAdminTransactionsParams{Stuck: "any"})
+one, _ := client.Admin.Transactions(ctx, rail0.ListAdminTransactionsParams{Hash: "0x…"})
+for _, tx := range stuck.Data {
+    fmt.Println(tx.ID, tx.Operation, tx.Status, tx.ErrorReason, tx.Payment.Rail0ID)
+}
+
+// Why an indexer callback could not be applied.
+errs, _ := client.Admin.SyncErrors(ctx, rail0.ListSyncErrorsParams{
+    SyncErrorFilter: rail0.SyncErrorFilter{Reason: "not_found"},
+})
+
+// One payment across accounts: its deliveries, its disputes, what operators did to it.
+deliveries, _ := client.Admin.EventCallbacks(ctx, rail0.ListAdminEventCallbacksParams{PaymentID: paymentID})
+disputes, _ := client.Admin.Disputes(ctx, rail0.ListAdminDisputesParams{PaymentID: paymentID})
+actions, _ := client.Admin.Actions(ctx, rail0.ListAdminActionsParams{PaymentID: paymentUUID}) // UUID only
+```
+
+Every list is paged like the others (`Meta`, `Sort`, `Page`, `PerPage`).
+
+### Write mode
+
+An operator session **reads**. A request that writes is refused `403`
+`write_mode_required` until the client carries a write-mode token: a second JWT for the
+same session, valid one hour by default and never longer than the session. No signature
+is asked; both switches are audited on the gateway.
+
+```go
+wm, err := client.Admin.EnableWriteMode(ctx) // POST /admin/write_mode
+client.SetToken(wm.Token)                    // write from here on, until wm.ExpiresAt
+
+// Clears exactly the rows the same filter lists, and returns how many went.
+deleted, err := client.Admin.ClearSyncErrors(ctx, rail0.SyncErrorFilter{Reason: "not_found"})
+
+revoked, _ := client.Admin.DisableWriteMode(ctx) // revokes the write-mode token presented
+client.SetToken(sessionToken)                    // back to reading
+```
+
+- The SDK never swaps the tokens by itself: when a client may write is the caller's
+  decision. The write-mode token is a credential like the session's: do not log it.
+- `ClearSyncErrors` with an **empty filter empties the ledger**, `balance_divergence`
+  rows included, and `Health` reports their standing count: filter by `Reason` to drop a
+  backlog and keep the divergences.
+- `client.Admin.WriteMode(ctx)` says whether the token the client carries is in write
+  mode, and until when.
 
 ## Payouts (JWT)
 
