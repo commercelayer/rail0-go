@@ -18,11 +18,14 @@ import (
 // close a circuit breaker (this file); find an account, read what it has
 // in motion and switch it off or on (admin_accounts.go); invite a merchant and follow the
 // request to its claim (admin_onboardings.go); see who holds the operator role, grant it
-// and revoke it (admin_operators.go). The catalogue stays with the console.
+// and revoke it (admin_operators.go); read the configuration the gateway runs with, the
+// chain catalogue with what is not in service, and reload its snapshot
+// (admin_catalog.go); read every account's payouts and payout destinations
+// (admin_payouts.go).
 //
 // READS AND WRITES. An operator session reads. A request that writes (ClearSyncErrors,
 // ResetWebhookCircuit, the account switch, every onboarding write, GrantOperator and
-// RevokeOperator, and an operator's writes through the public
+// RevokeOperator, ReloadCatalog, and an operator's writes through the public
 // services) is refused 403 `write_mode_required` unless the client carries a
 // write-mode token: a second JWT, issued by EnableWriteMode for the same session, valid
 // for an hour by default and never longer than the session. The caller puts it on the
