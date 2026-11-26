@@ -305,12 +305,53 @@ expect_contains "milestone: a feat merged into it makes it minor" "$out" "-> v$b
 expect_contains "milestone: its merged feat is in the notes" "$out" "- **config:** per-environment settings (#51)"
 expect_contains "milestone: its merged fix is in the notes" "$out" "- **keys:** a clearer error (#50)"
 expect_absent "milestone: its own title is not a change" "$out" "Next release (#60)"
+# The title is written from what the branch releases: the feat decided the version, the
+# fix is the "1 more".
+milestone_title="Release v$bx.1.0: per-environment settings and 1 more"
+expect_contains "milestone: dry run shows the title it writes" "$out" "PR title: $milestone_title"
+
+# The pull request needs a summary above the release block: nothing, only a comment, or
+# the placeholder these pull requests used to be opened with, is none. A dry run warns; a
+# real run refuses before it commits or pushes anything.
+before_refusals="$(git rev-parse origin/milestone/next)"
+for body in "" "<!-- to be written -->" "Filled in by bin/release-prepare."; do
+  out="$(FAKE_PR_BODY="$body" run --dry-run)"
+  expect_contains "milestone: dry run warns about no summary ('$body')" "$out" "pull request #60 has no summary"
+  expect_contains "milestone: and still prints the release ('$body')" "$out" "-> v$bx.1.0"
+  out="$(FAKE_PR_BODY="$body" run || true)"
+  expect_contains "milestone: real run refuses without a summary ('$body')" "$out" "pull request #60 has no summary"
+  expect_absent "milestone: and says nothing was released ('$body')" "$out" "now releases"
+done
+git fetch --quiet origin milestone/next
+[ "$(git rev-parse origin/milestone/next)" = "$before_refusals" ] && [ "$(git rev-parse HEAD)" = "$before_refusals" ] &&
+  [ ! -e "$FAKE_PR_EDITED" ] &&
+  pass "milestone: a refusal commits nothing, pushes nothing, edits nothing" ||
+  fail "milestone: a refusal left something behind"
+expect_absent "milestone: a summary is no warning" "$(run --dry-run)" "has no summary"
+
 out="$(run)"
 expect_contains "milestone: real run updates its pull request" "$out" "pull request #60 now releases v$bx.1.0"
+[ "$(cat "$FAKE_PR_EDITED.title")" = "$milestone_title" ] &&
+  pass "milestone: the title names the release" || fail "milestone: title is '$(cat "$FAKE_PR_EDITED.title")'"
+expect_contains "milestone: the summary is kept above the block" "$(sed -n 1p "$FAKE_PR_EDITED")" "Milestone: Next release."
 FAKE_PR_BODY="$(cat "$FAKE_PR_EDITED")" FAKE_PR_TITLE="$(cat "$FAKE_PR_EDITED.title")"
 out="$(run)"
 expect_contains "milestone: re-run leaves the version alone" "$out" "already carries $bx.1.0"
+[ "$(cat "$FAKE_PR_EDITED.title")" = "$milestone_title" ] &&
+  pass "milestone: re-run writes the same title" || fail "milestone: re-run title is '$(cat "$FAKE_PR_EDITED.title")'"
 expect_absent "milestone: the bump commit is not a change" "$(cat "$FAKE_PR_EDITED")" "chore(release)"
+
+# A later pull request that outranks the others takes the title; a second one at the same
+# level does not (the first by number stays), and the count follows what is merged.
+merge_into 53 "feat(api)!: a renamed call"
+merge_into 52 "feat!: an earlier breaking change"
+git push --quiet origin milestone/next
+out="$(run --dry-run)"
+expect_contains "milestone: the title follows what decides the version" "$out" "PR title: Release v$((bx + 1)).0.0: an earlier breaking change and 3 more"
+
+# Text inside the release block does not count: only what is above it.
+expect_contains "summary: the block alone is no summary" \
+  "$(FAKE_PR_BODY=$'<!-- release:start -->\nold block\n<!-- release:end -->' run --dry-run)" "pull request #60 has no summary"
 unset FAKE_PR FAKE_PR_TITLE FAKE_PR_BODY FAKE_PR_EDITED
 git switch --quiet main
 

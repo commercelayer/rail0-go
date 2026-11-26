@@ -1457,6 +1457,22 @@ branch decide the version and fill the notes, together with anything merged on `
 since the last tag. After the release merges, delete `milestone/next`, cut it again from
 `main` and move the open milestone's pull requests onto it.
 
+**The release pull request says what it releases.** Two things, both checked or written
+by `bin/release-prepare`:
+
+- **A summary, written by its author** at the top of the description: a few lines saying
+  what the release brings, what is new and what does not change. The script writes its
+  own block (notes, version, how the release happens) below it, between
+  `<!-- release:start -->` markers, and keeps everything above on every re-run, so the
+  summary is written once and updated when more is merged. It is the first thing shown in
+  the pull request, in the message of its merge commit and in every preview. Without one
+  (an empty description, only a comment, or a placeholder) a real run **refuses** before
+  it commits or pushes anything; `--dry-run` warns and lists what the release contains,
+  which is what to write the summary from.
+- **A title written by the script**:
+  `Release vX.Y.Z: <the first pull request that decided the version> and N more`. It is
+  rewritten on every run, so it follows what is merged.
+
 1. `bin/release-prepare`, on an up-to-date, clean `main`. It computes the version from the titles of the pull requests merged since the last tag
    (Conventional Commits): a breaking change — `!` after the type, as in `feat(api)!:`, or a
    `BREAKING CHANGE:` footer — makes it a major, any `feat` a minor, anything else a patch,
