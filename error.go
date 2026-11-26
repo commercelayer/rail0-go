@@ -158,6 +158,8 @@ var errorHints = map[string]string{
 	"last_admin":                "the change would leave no active operator — grant the operator role to another active account first",
 	"account_has_open_exposure": "the account still has payments in flight, escrow, open disputes or payouts in progress — read them (Admin.AccountExposure), then deactivate with the acknowledgement if that is the decision",
 	"self_deactivate":           "an operator cannot deactivate their own account — another operator has to",
+	"self_revoke":               "an operator cannot revoke their own role — another operator has to",
+	"expiry_in_the_past":        "the grant's expiry is not in the future — pass a later time, or none for a grant that does not expire",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
 	"not_payee":                   "only the merchant (payee) may do this",
 	"not_payer":                   "only the buyer (payer) may do this",
