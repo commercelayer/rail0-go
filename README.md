@@ -99,7 +99,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Webhooks` | Webhook subscription management (JWT) |
 | `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit, delete, reserves (JWT) |
 | `client.Payouts` | Merchant cash-out transfers: prepare, verify, sign, submit (JWT) |
-| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, deliveries, disputes, audit log, write mode (JWT with the operator grant) |
+| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, deliveries, disputes, audit log, accounts (search, exposure, switch off and on), wallet usage, onboarding requests, write mode (JWT with the operator grant) |
 
 Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
 
@@ -624,7 +624,7 @@ me, err = client.Accounts.Update(ctx, accountID, rail0.UpdateAccountRequest{
 `Update` edits only the holder's own profile. Name and email are each unique across
 accounts, so one already taken answers `409` (`conflict`). A deactivated account or
 signed-in wallet answers `403` `account_deactivated` / `wallet_deactivated`. The
-account's `active` flag is an operator action and is not exposed by the SDK; `priority_tip`
+account's `active` flag is an operator action, on [`client.Admin`](#accounts-and-wallets), not here; `priority_tip`
 is the owner's (or an admin's) and never touches the buyer's dispute/close_dispute gas.
 
 ## Operator (admin)
@@ -633,8 +633,8 @@ is the owner's (or an admin's) and never touches the buyer's dispute/close_dispu
 `/admin`. It needs a session whose account holds the operator grant (`auth.Admin` is
 true after `Auth.Login`); any other session is answered `403` `forbidden`. The SDK
 otherwise tracks the public surface, and this is the deliberate exception: what an
-operator does from a terminal while something is wrong. Granting the operator role,
-onboarding and the catalogue stay with the console.
+operator does from a terminal. Granting the operator role and the catalogue stay with
+the console.
 
 ```go
 // One verdict, then a named check per thing that can be wrong. Always 200: a degraded
@@ -661,6 +661,72 @@ actions, _ := client.Admin.Actions(ctx, rail0.ListAdminActionsParams{PaymentID: 
 ```
 
 Every list is paged like the others (`Meta`, `Sort`, `Page`, `PerPage`).
+
+### Accounts and wallets
+
+```go
+// Find an account: a part of the name or email, a wallet address or its beginning, or the id.
+found, _ := client.Admin.Accounts(ctx, rail0.ListAdminAccountsParams{Query: "0x2d2b…"})
+account, _ := client.Admin.Account(ctx, accountID) // the whole record: Active, Status, Admin
+
+// What a deactivation would leave in motion: payments in flight, escrow, open disputes, payouts.
+exposure, _ := client.Admin.AccountExposure(ctx, accountID)
+if !exposure.Empty {
+    for _, t := range exposure.Payments.ByToken {
+        fmt.Println(t.Symbol, t.AmountFormatted, "in", t.Count, "payments")
+    }
+}
+
+// Writes: in write mode (below), audited.
+_, err := client.Admin.DeactivateAccount(ctx, accountID, false) // 409 account_has_open_exposure while it has any
+_, err = client.Admin.DeactivateAccount(ctx, accountID, true)   // the operator read the figures and decided
+_, err = client.Admin.ActivateAccount(ctx, accountID)
+
+// A wallet: what still names its address, then the switch.
+usage, _ := client.Admin.WalletUsage(ctx, accountID, walletIDOrAddress)
+wallets, _ := client.Wallets.List(ctx, accountID) // any account, for an operator
+off := false
+_, err = client.Wallets.Update(ctx, accountID, walletID, rail0.UpdateWalletRequest{Active: &off}) // write mode
+```
+
+- A deactivated account can start no new payment and write no payout. What is already in
+  motion stays where it is, and nothing is lost: escrow returns to the buyer by void or
+  release, and the wallet is the merchant's.
+- The gateway also refuses an operator's own account (`422` `self_deactivate`) and the
+  account holding the last active operator grant (`422` `last_admin`).
+- The wallet list and the wallet switch are the public `client.Wallets` calls: the gateway
+  widens them for an operator session. A wallet an operator switched off can be switched
+  back on only by an operator; the account's only active wallet cannot be switched off
+  (`422` `last_active_wallet`).
+
+### Onboarding requests
+
+A merchant's account is born when the merchant claims an onboarding request, by signing
+with the wallet the request names, from the link in the email. The operator creates the
+request (an invite) and follows it. **No answer carries the link**: it exists only in the
+email, and every new one makes the previous stop working.
+
+```go
+// Open and expired by default: the requests still waiting for something.
+failed := true
+reqs, _ := client.Admin.Onboardings(ctx, rail0.ListOnboardingsParams{SendFailed: &failed})
+for _, r := range reqs.Data {
+    fmt.Println(r.ID, r.Email, r.Status, r.LastSendError, r.Conflicts)
+}
+
+// Writes: in write mode (below), audited.
+out, err := client.Admin.Invite(ctx, rail0.InviteRequest{Name: "Acme", Email: "ops@acme.example", Address: "0x…"})
+out, err = client.Admin.CorrectOnboarding(ctx, id, rail0.CorrectOnboardingRequest{Email: "right@acme.example"})
+sent, err := client.Admin.ResendOnboarding(ctx, id) // also how a failed send is retried
+err = client.Admin.CancelOnboarding(ctx, id)        // a completed request is history: 422 onboarding_completed
+```
+
+- `Invite` posts to `/signup`, the public sign-up's route: the token is what makes it an
+  invite. On a client that carries none it returns `rail0.ErrInviteNeedsSession` and sends
+  nothing.
+- A name, email or address an account already holds answers `409` (`account_name_taken`,
+  `account_email_taken`, `account_wallet_taken`); an email the environment may not write
+  to, `422` `email_domain_not_allowed`.
 
 ### Write mode
 

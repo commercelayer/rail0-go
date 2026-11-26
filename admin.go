@@ -12,13 +12,16 @@ import (
 // session is answered 403 `forbidden`, with no hint of why.
 //
 // The SDK otherwise tracks the public surface, and this service is the deliberate
-// exception: it carries what an operator does from a terminal while something is wrong
-// — read the diagnostics, find the stuck transactions, read and clear the sync errors,
-// follow one payment through deliveries, disputes and the audit log. Granting the
-// operator role, onboarding and the catalogue stay with the console.
+// exception: it carries what an operator does from a terminal — read the diagnostics,
+// find the stuck transactions, read and clear the sync errors, follow one payment through
+// deliveries, disputes and the audit log (this file); find an account, read what it has
+// in motion and switch it off or on (admin_accounts.go); invite a merchant and follow the
+// request to its claim (admin_onboardings.go). Granting the operator role and the
+// catalogue stay with the console.
 //
-// READS AND WRITES. An operator session reads. A request that writes (here, only
-// ClearSyncErrors) is refused 403 `write_mode_required` unless the client carries a
+// READS AND WRITES. An operator session reads. A request that writes (ClearSyncErrors,
+// the account switch, every onboarding write, and an operator's writes through the public
+// services) is refused 403 `write_mode_required` unless the client carries a
 // write-mode token: a second JWT, issued by EnableWriteMode for the same session, valid
 // for an hour by default and never longer than the session. The caller puts it on the
 // client with SetToken, and puts the session token back when it is done (DisableWriteMode
