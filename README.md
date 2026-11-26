@@ -99,7 +99,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Webhooks` | Webhook subscription management (JWT) |
 | `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit, delete, reserves (JWT) |
 | `client.Payouts` | Merchant cash-out transfers: prepare, verify, sign, submit (JWT) |
-| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, deliveries, disputes, audit log, accounts (search, exposure, switch off and on), wallet usage, onboarding requests, write mode (JWT with the operator grant) |
+| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, webhook subscriptions and their circuit reset, deliveries, disputes, audit log, accounts (search, exposure, switch off and on), wallet usage, onboarding requests, write mode (JWT with the operator grant) |
 
 Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
 
@@ -658,6 +658,17 @@ errs, _ := client.Admin.SyncErrors(ctx, rail0.ListSyncErrorsParams{
 deliveries, _ := client.Admin.EventCallbacks(ctx, rail0.ListAdminEventCallbacksParams{PaymentID: paymentID})
 disputes, _ := client.Admin.Disputes(ctx, rail0.ListAdminDisputesParams{PaymentID: paymentID})
 actions, _ := client.Admin.Actions(ctx, rail0.ListAdminActionsParams{PaymentID: paymentUUID}) // UUID only
+
+// Webhook subscriptions across accounts: which circuits are open, and closing one.
+open, _ := client.Admin.Webhooks(ctx, rail0.ListAdminWebhooksParams{CircuitState: "open"})
+for _, wh := range open.Data {
+    fmt.Println(wh.ID, wh.AccountID, wh.CallbackURL, wh.CircuitFailureCount, wh.LastAttemptStatus)
+}
+failed, _ := client.Admin.EventCallbacks(ctx, rail0.ListAdminEventCallbacksParams{WebhookID: webhookID, Status: "failed"})
+_, err := client.Admin.ResetWebhookCircuit(ctx, webhookID) // a write: write mode, audited
+
+// The audit log: every operator write, who did it and to whom.
+log, _ := client.Admin.Actions(ctx, rail0.ListAdminActionsParams{TargetAccountID: accountID, From: "2026-11-01T00:00:00Z"})
 ```
 
 Every list is paged like the others (`Meta`, `Sort`, `Page`, `PerPage`).
