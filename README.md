@@ -99,7 +99,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Webhooks` | Webhook subscription management (JWT) |
 | `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit, delete, reserves (JWT) |
 | `client.Payouts` | Merchant cash-out transfers: prepare, verify, sign, submit (JWT) |
-| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, webhook subscriptions and their circuit reset, deliveries, disputes, audit log, accounts (search, exposure, switch off and on), wallet usage, onboarding requests, write mode (JWT with the operator grant) |
+| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, webhook subscriptions and their circuit reset, deliveries, disputes, audit log, accounts (search, exposure, switch off and on), wallet usage, onboarding requests, the operator role (list, grant, revoke), write mode (JWT with the operator grant) |
 
 Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
 
@@ -633,8 +633,7 @@ is the owner's (or an admin's) and never touches the buyer's dispute/close_dispu
 `/admin`. It needs a session whose account holds the operator grant (`auth.Admin` is
 true after `Auth.Login`); any other session is answered `403` `forbidden`. The SDK
 otherwise tracks the public surface, and this is the deliberate exception: what an
-operator does from a terminal. Granting the operator role and the catalogue stay with
-the console.
+operator does from a terminal. The catalogue stays with the console.
 
 ```go
 // One verdict, then a named check per thing that can be wrong. Always 200: a degraded
@@ -738,6 +737,33 @@ err = client.Admin.CancelOnboarding(ctx, id)        // a completed request is hi
 - A name, email or address an account already holds answers `409` (`account_name_taken`,
   `account_email_taken`, `account_wallet_taken`); an email the environment may not write
   to, `422` `email_domain_not_allowed`.
+
+### The operator role
+
+The role is a grant beside the account: who vouched for it, why, and optionally until
+when.
+
+```go
+grants, _ := client.Admin.Operators(ctx) // every grant, expired ones included, with account and grantor
+for _, g := range grants {
+    fmt.Println(g.AccountID, g.Note, g.ExpiresAt, g.GrantedBy)
+}
+
+// Writes: in write mode (below), audited.
+g, err := client.Admin.GrantOperator(ctx, accountID, rail0.GrantOperatorRequest{
+    Note:      "on call this week",
+    ExpiresAt: "2026-12-03T00:00:00Z", // optional: past it the grant opens nothing
+})
+err = client.Admin.RevokeOperator(ctx, accountID) // the ACCOUNT's id, not the grant's
+```
+
+- From its next request the account reads every account and, in write mode, writes to
+  them: grant it to people, with a note, and time-box it when the need is temporary.
+- An account that already holds a grant, expired or not, answers `409` `conflict`: revoke
+  it first to change its note or expiry. An expiry not in the future, `422`
+  `expiry_in_the_past`.
+- An operator cannot revoke their own grant (`422` `self_revoke`) and the last active
+  operator cannot be revoked (`422` `last_admin`).
 
 ### Write mode
 
