@@ -37,6 +37,9 @@ type Client struct {
 	Analytics *AnalyticsService
 	// Health exposes the gateway liveness/readiness check.
 	Health *HealthService
+	// Admin is the operator's side of the gateway: the cross-account /admin routes
+	// (a session whose account holds the operator grant).
+	Admin *AdminService
 }
 
 // NewClient creates a new Client with the provided options.
@@ -57,6 +60,7 @@ func NewClient(opts ClientOptions) *Client {
 		Webhooks:           &WebhooksService{http: h},
 		Analytics:          &AnalyticsService{http: h},
 		Health:             &HealthService{http: h},
+		Admin:              &AdminService{http: h},
 	}
 }
 

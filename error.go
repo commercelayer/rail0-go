@@ -91,7 +91,8 @@ var errorHints = map[string]string{
 	// The open and close lists differ (and full_refund is system-only), so the hint
 	// points at both rather than guessing which one the caller meant.
 	"unknown_dispute_reason":       "the reason must be a dispute-reason code (or its exact bytes32) from the right list — DisputeOpenReasons to open, DisputeCloseReasons to close",
-	"transaction_not_overwritable": "a transaction for this operation is already in flight — wait for it to settle",
+	"transaction_not_overwritable": "this operation's transaction is already confirmed — its hash cannot be replaced (a failed one can: report the hash again)",
+	"transaction_in_flight":        "the other party already has this operation's transaction signed or sent, and this session cannot replace it — wait a moment and prepare the operation again to get a transaction of your own",
 	"signer_mismatch":              "the signature recovers to a different wallet than the one that must sign — the payment's payer/payee, or at POST /claim the wallet the onboarding request names",
 	// The SIWE BINDING failures, split out of signer_mismatch so a failed login says
 	// WHICH part of the proof did not bind (rail0-gateway#216). None of these names the
@@ -153,8 +154,10 @@ var errorHints = map[string]string{
 	// could neither act nor add a wallet back. Adding a wallet is suspended and a session
 	// changes only its own wallet, so the other wallet comes back on from its own session
 	// (if its owner switched it off) or from an operator (gateway#439).
-	"last_active_wallet": "this is the account's only active wallet — another wallet must be active before this one can be switched off: sign in with one you switched off and reactivate it, or ask an operator (adding a wallet is not available yet)",
-	"last_admin":         "the change would leave no active operator — grant the operator role to another active account first",
+	"last_active_wallet":        "this is the account's only active wallet — another wallet must be active before this one can be switched off: sign in with one you switched off and reactivate it, or ask an operator (adding a wallet is not available yet)",
+	"last_admin":                "the change would leave no active operator — grant the operator role to another active account first",
+	"account_has_open_exposure": "the account still has payments in flight, escrow, open disputes or payouts in progress — read them (Admin.AccountExposure), then deactivate with the acknowledgement if that is the decision",
+	"self_deactivate":           "an operator cannot deactivate their own account — another operator has to",
 	// contract reverts (surfaced as contract_revert, or on a failed transaction)
 	"not_payee":                   "only the merchant (payee) may do this",
 	"not_payer":                   "only the buyer (payer) may do this",
@@ -168,7 +171,7 @@ var errorHints = map[string]string{
 	"no_active_contract":          "no active RAIL0 contract on that chain",
 	"missing_param":               "a required parameter is missing from the request",
 	"validation_failed":           "a parameter is invalid — the error detail names the offending field",
-	"rate_limited":                "rate limit reached — wait for Retry-After (the time left in the window) and retry, or set RetryOn429",
+	"rate_limited":                "too many requests, or too many of this payment's transactions still waiting to be confirmed — wait the Retry-After seconds and retry, or set RetryOn429",
 	"event_not_found":             "the reported transaction mined but did not perform this operation on this payment — nothing moved; check the hash and prepare the operation again",
 	"submission_timeout":          "the transaction was not mined in time and was recorded as failed — if it mines later, re-report its hash via the operation's submitted endpoint",
 	"token_not_accepted":          "this RAIL0 deployment does not accept that token — its allowlist is fixed at deploy time",
@@ -179,9 +182,11 @@ var errorHints = map[string]string{
 	"invalid_sort":                "that sort field is not one this endpoint can order by — the error detail names the allowed set",
 	"webhook_limit_reached":       "the account already holds the most webhook subscriptions it may — delete one, or add topics to an existing subscription",
 	// Onboarding: POST /signup and POST /claim (the gateway's onboarding flow).
-	// The /admin/onboardings codes (onboarding_not_found, onboarding_completed) are left
-	// out: those routes are the console's, not the SDK's. The link codes never say which
-	// term failed — a stale link has one remedy: the newest email, or a new link.
+	// The link codes never say which term failed — a stale link has one remedy: the
+	// newest email, or a new link. onboarding_not_found and onboarding_completed are the
+	// operator's (client.Admin).
+	"onboarding_not_found":          "no onboarding request has that id — it was cancelled, or removed after it expired; list the requests again",
+	"onboarding_completed":          "the merchant already claimed this request, so it is history — act on the account instead (the request's id is the account's id)",
 	"onboarding_unavailable":        "this gateway has no onboarding secret configured, so it can neither issue nor verify sign-up links — ask the operator",
 	"email_provider_not_configured": "the gateway has no email provider that delivers, so no link was sent and nothing was saved — ask the operator to configure one",
 	"email_domain_not_allowed":      "this environment emails only its allowed domains (the detail lists them) — use an address on one of them; nothing was saved",
