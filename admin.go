@@ -14,13 +14,14 @@ import (
 // The SDK otherwise tracks the public surface, and this service is the deliberate
 // exception: it carries what an operator does from a terminal — read the diagnostics,
 // find the stuck transactions, read and clear the sync errors, follow one payment through
-// deliveries, disputes and the audit log (this file); find an account, read what it has
+// deliveries, disputes and the audit log, read every account's webhook subscriptions and
+// close a circuit breaker (this file); find an account, read what it has
 // in motion and switch it off or on (admin_accounts.go); invite a merchant and follow the
 // request to its claim (admin_onboardings.go). Granting the operator role and the
 // catalogue stay with the console.
 //
 // READS AND WRITES. An operator session reads. A request that writes (ClearSyncErrors,
-// the account switch, every onboarding write, and an operator's writes through the public
+// ResetWebhookCircuit, the account switch, every onboarding write, and an operator's writes through the public
 // services) is refused 403 `write_mode_required` unless the client carries a
 // write-mode token: a second JWT, issued by EnableWriteMode for the same session, valid
 // for an hour by default and never longer than the session. The caller puts it on the
@@ -245,6 +246,48 @@ type OperatorWebhook struct {
 	LastAttemptStatus string `json:"last_attempt_status,omitempty"`
 	// Account is the owning account's public shape (id, name, email, …).
 	Account any `json:"account,omitempty"`
+}
+
+// ListAdminWebhooksParams filters GET /admin/webhooks.
+type ListAdminWebhooksParams struct {
+	AccountID string // only this account's subscriptions
+	// CircuitState is "open" or "closed". An open circuit is a subscription the gateway
+	// stopped delivering to after repeated failures.
+	CircuitState string
+	Topic        string // only subscriptions that include this topic
+	// Sort: created_at, updated_at, circuit_failure_count or name; prefix with - for desc.
+	// The default puts the open circuits first, then the most recently updated.
+	Sort    string
+	Page    int
+	PerPage int
+}
+
+// Webhooks lists every webhook subscription across accounts, each with its circuit state,
+// its newest delivery attempt and the account that owns it. Never a signing key: a shared
+// secret is returned once, to the subscription's owner, and to nobody else.
+func (s *AdminService) Webhooks(ctx context.Context, params ...ListAdminWebhooksParams) (*PaginatedResponse[OperatorWebhook], error) {
+	q := url.Values{}
+	if len(params) > 0 {
+		p := params[0]
+		setNonEmpty(q, "account_id", p.AccountID)
+		setNonEmpty(q, "circuit_state", p.CircuitState)
+		setNonEmpty(q, "topic", p.Topic)
+		setPaging(q, p.Sort, p.Page, p.PerPage)
+	}
+	return listPage[OperatorWebhook](ctx, s.http, withQuery("/admin/webhooks", q))
+}
+
+// ResetWebhookCircuit closes a subscription's circuit breaker, zeroes its failure count
+// and re-enables it, on any account (PUT /admin/webhooks/{id}/reset_circuit): the same
+// write as the owner's WebhooksService.ResetCircuit. It re-arms delivery to an endpoint
+// the operator does not control, so it is a write in write mode (see AdminService) and the
+// gateway audits it with the callback URL.
+func (s *AdminService) ResetWebhookCircuit(ctx context.Context, id string) (*OperatorWebhook, error) {
+	var out OperatorWebhook
+	if err := s.http.put(ctx, pathf("/admin/webhooks/%s/reset_circuit", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // OperatorEventCallback is a webhook delivery as the operator lists it: the record, plus
