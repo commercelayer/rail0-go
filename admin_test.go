@@ -272,3 +272,42 @@ func TestAdminEventCallbacksDisputesAndActions(t *testing.T) {
 		t.Errorf("action = %+v", a)
 	}
 }
+
+func TestAdminWebhooksListAndCircuitReset(t *testing.T) {
+	ctx := context.Background()
+
+	s := newAdminServer(t, 200, `[{"id":"wh1","name":"Shop","callback_url":"https://shop.example/hook","topics":["payments.captured"],
+		"active":false,"circuit_state":"open","circuit_failure_count":7,"account_id":"acc1","disabled_at":"2026-11-20T10:00:00Z",
+		"last_attempt_at":"2026-11-20T09:59:58Z","last_attempt_status":"failed","account":{"id":"acc1","name":"Acme"}}]`)
+	page, err := s.client().Admin.Webhooks(ctx, ListAdminWebhooksParams{
+		AccountID: "acc1", CircuitState: "open", Topic: "payments.captured", Sort: "-circuit_failure_count", Page: 2, PerPage: 25,
+	})
+	if err != nil {
+		t.Fatalf("Webhooks: %v", err)
+	}
+	s.wantRequest(t, http.MethodGet, "/admin/webhooks", map[string]string{
+		"account_id": "acc1", "circuit_state": "open", "topic": "payments.captured",
+		"sort": "-circuit_failure_count", "page": "2", "per_page": "25",
+	})
+	wh := page.Data[0]
+	if wh.ID != "wh1" || wh.CircuitState != "open" || wh.CircuitFailureCount != 7 || wh.AccountID != "acc1" ||
+		wh.LastAttemptStatus != "failed" || wh.SharedSecret != "" || page.Meta.Total != 70 {
+		t.Errorf("webhook = %+v, meta %+v", wh, page.Meta)
+	}
+
+	s = newAdminServer(t, 200, `[]`)
+	if _, err := s.client().Admin.Webhooks(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.wantRequest(t, http.MethodGet, "/admin/webhooks", nil)
+
+	s = newAdminServer(t, 200, `{"id":"wh1","active":true,"circuit_state":"closed","circuit_failure_count":0,"account_id":"acc1"}`)
+	reset, err := s.client().Admin.ResetWebhookCircuit(ctx, "wh1")
+	if err != nil || reset.CircuitState != "closed" || !reset.Active || reset.AccountID != "acc1" {
+		t.Errorf("ResetWebhookCircuit = %+v, %v", reset, err)
+	}
+	s.wantRequest(t, http.MethodPut, "/admin/webhooks/wh1/reset_circuit", nil)
+	if len(s.body) != 0 {
+		t.Errorf("the reset sent a body: %s", s.body)
+	}
+}

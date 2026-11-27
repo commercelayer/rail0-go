@@ -99,7 +99,7 @@ client := rail0.NewClient(rail0.ClientOptions{
 | `client.Webhooks` | Webhook subscription management (JWT) |
 | `client.PayoutDestinations` | Deposit addresses the merchant cashes out to: register, verify, edit, delete, reserves (JWT) |
 | `client.Payouts` | Merchant cash-out transfers: prepare, verify, sign, submit (JWT) |
-| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, deliveries, disputes, audit log, accounts (search, exposure, switch off and on), wallet usage, onboarding requests, write mode (JWT with the operator grant) |
+| `client.Admin` | The operator's cross-account routes: diagnostics, stuck transactions, sync errors, webhook subscriptions and their circuit reset, deliveries, disputes, audit log, accounts (search, exposure, switch off and on), wallet usage, onboarding requests, the operator role (list, grant, revoke), the configuration and the chain catalogue, every account's payouts (read-only), write mode (JWT with the operator grant) |
 
 Every id a method puts in the URL path (payment, transaction, account, wallet, token, webhook, callback ids and operation names) is percent-escaped as **one path segment**, so an id containing `/`, `?`, `#` or spaces can never address a different route than the method names. An id that is empty or exactly `.` / `..` — the segments escaping cannot neutralise — is rejected with an error before any request is sent.
 
@@ -633,8 +633,7 @@ is the owner's (or an admin's) and never touches the buyer's dispute/close_dispu
 `/admin`. It needs a session whose account holds the operator grant (`auth.Admin` is
 true after `Auth.Login`); any other session is answered `403` `forbidden`. The SDK
 otherwise tracks the public surface, and this is the deliberate exception: what an
-operator does from a terminal. Granting the operator role and the catalogue stay with
-the console.
+operator does from a terminal.
 
 ```go
 // One verdict, then a named check per thing that can be wrong. Always 200: a degraded
@@ -658,6 +657,17 @@ errs, _ := client.Admin.SyncErrors(ctx, rail0.ListSyncErrorsParams{
 deliveries, _ := client.Admin.EventCallbacks(ctx, rail0.ListAdminEventCallbacksParams{PaymentID: paymentID})
 disputes, _ := client.Admin.Disputes(ctx, rail0.ListAdminDisputesParams{PaymentID: paymentID})
 actions, _ := client.Admin.Actions(ctx, rail0.ListAdminActionsParams{PaymentID: paymentUUID}) // UUID only
+
+// Webhook subscriptions across accounts: which circuits are open, and closing one.
+open, _ := client.Admin.Webhooks(ctx, rail0.ListAdminWebhooksParams{CircuitState: "open"})
+for _, wh := range open.Data {
+    fmt.Println(wh.ID, wh.AccountID, wh.CallbackURL, wh.CircuitFailureCount, wh.LastAttemptStatus)
+}
+failed, _ := client.Admin.EventCallbacks(ctx, rail0.ListAdminEventCallbacksParams{WebhookID: webhookID, Status: "failed"})
+_, err := client.Admin.ResetWebhookCircuit(ctx, webhookID) // a write: write mode, audited
+
+// The audit log: every operator write, who did it and to whom.
+log, _ := client.Admin.Actions(ctx, rail0.ListAdminActionsParams{TargetAccountID: accountID, From: "2026-11-01T00:00:00Z"})
 ```
 
 Every list is paged like the others (`Meta`, `Sort`, `Page`, `PerPage`).
@@ -727,6 +737,74 @@ err = client.Admin.CancelOnboarding(ctx, id)        // a completed request is hi
 - A name, email or address an account already holds answers `409` (`account_name_taken`,
   `account_email_taken`, `account_wallet_taken`); an email the environment may not write
   to, `422` `email_domain_not_allowed`.
+
+### The operator role
+
+The role is a grant beside the account: who vouched for it, why, and optionally until
+when.
+
+```go
+grants, _ := client.Admin.Operators(ctx) // every grant, expired ones included, with account and grantor
+for _, g := range grants {
+    fmt.Println(g.AccountID, g.Note, g.ExpiresAt, g.GrantedBy)
+}
+
+// Writes: in write mode (below), audited.
+g, err := client.Admin.GrantOperator(ctx, accountID, rail0.GrantOperatorRequest{
+    Note:      "on call this week",
+    ExpiresAt: "2026-12-03T00:00:00Z", // optional: past it the grant opens nothing
+})
+err = client.Admin.RevokeOperator(ctx, accountID) // the ACCOUNT's id, not the grant's
+```
+
+- From its next request the account reads every account and, in write mode, writes to
+  them: grant it to people, with a note, and time-box it when the need is temporary.
+- An account that already holds a grant, expired or not, answers `409` `conflict`: revoke
+  it first to change its note or expiry. An expiry not in the future, `422`
+  `expiry_in_the_past`.
+- An operator cannot revoke their own grant (`422` `self_revoke`) and the last active
+  operator cannot be revoked (`422` `last_admin`).
+
+### Configuration and the chain catalogue
+
+```go
+// What the gateway is running with: every window, threshold, limit and feature flag.
+cfg, _ := client.Admin.Config(ctx) // group → setting → {value, env, overridden, description}
+enabled := cfg["payouts"].(map[string]any)["enabled"].(map[string]any)
+fmt.Println(enabled["value"], enabled["env"], enabled["overridden"])
+
+// What it is configured to serve, what is not in service included (whole rows).
+chains, _ := client.Admin.Blockchains(ctx)
+tokens, _ := client.Admin.Tokens(ctx)
+contracts, _ := client.Admin.Contracts(ctx)
+
+// The catalogue is served from memory: what a reload would change, then the reload.
+diff, _ := client.Admin.CatalogDiff(ctx) // diff.Stale, diff.Pending, added / removed / changed
+r, err := client.Admin.ReloadCatalog(ctx) // a write: write mode, audited
+```
+
+- These come back as the gateway sends them (maps): whole-record views and a table of
+  settings gain entries with a gateway release, and nothing is dropped on the way.
+- No secret is in them. A keyed RPC endpoint appears as its template, with a
+  `{RAIL0_RPC_KEY_<NAME>}` placeholder.
+- `CatalogDiff` and `ReloadCatalog` are about **one process**, the one that answers. Where
+  several serve (web machines, a worker) a restart is what reaches them all.
+
+### Payouts, read-only
+
+```go
+payouts, _ := client.Admin.Payouts(ctx, rail0.ListAdminPayoutsParams{Statuses: []string{"failed"}})
+one, _ := client.Admin.Payout(ctx, payoutID)
+trail, _ := client.Admin.PayoutEvents(ctx, payoutID)
+
+dests, _ := client.Admin.PayoutDestinations(ctx, rail0.ListAdminPayoutDestinationsParams{AccountID: accountID})
+dest, _ := client.Admin.PayoutDestination(ctx, destinationID)
+events, _ := client.Admin.PayoutDestinationEvents(ctx, destinationID)
+```
+
+An operator can look, not act: the gateway is non-custodial and every payout write is the
+destination wallet's own. With the payouts feature off on the gateway these routes answer
+`404`.
 
 ### Write mode
 
@@ -1456,6 +1534,22 @@ whole milestone. Run `bin/release-prepare` on `milestone/next` (clean, pushed, c
 branch decide the version and fill the notes, together with anything merged on `main`
 since the last tag. After the release merges, delete `milestone/next`, cut it again from
 `main` and move the open milestone's pull requests onto it.
+
+**The release pull request says what it releases.** Two things, both checked or written
+by `bin/release-prepare`:
+
+- **A summary, written by its author** at the top of the description: a few lines saying
+  what the release brings, what is new and what does not change. The script writes its
+  own block (notes, version, how the release happens) below it, between
+  `<!-- release:start -->` markers, and keeps everything above on every re-run, so the
+  summary is written once and updated when more is merged. It is the first thing shown in
+  the pull request, in the message of its merge commit and in every preview. Without one
+  (an empty description, only a comment, or a placeholder) a real run **refuses** before
+  it commits or pushes anything; `--dry-run` warns and lists what the release contains,
+  which is what to write the summary from.
+- **A title written by the script**:
+  `Release vX.Y.Z: <the first pull request that decided the version> and N more`. It is
+  rewritten on every run, so it follows what is merged.
 
 1. `bin/release-prepare`, on an up-to-date, clean `main`. It computes the version from the titles of the pull requests merged since the last tag
    (Conventional Commits): a breaking change — `!` after the type, as in `feat(api)!:`, or a

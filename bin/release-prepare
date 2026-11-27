@@ -14,7 +14,12 @@
 #     release;
 #   - on a milestone branch (milestone/next, the usual way): change pull requests target it
 #     and are merged into it by the developer, and its ONE pull request into main is the
-#     release. The pull requests merged into it decide the version and fill the notes.
+#     release. The pull requests merged into it decide the version, fill the notes and give
+#     the pull request its title ("Release vX.Y.Z: <what decided the version> and N more").
+#
+# On a branch, the pull request must say what it releases in its author's words: a summary
+# at the top of its description, above the block this script writes. Without one a real run
+# refuses, before anything is committed or pushed.
 #
 # Nothing here publishes, tags or touches a registry: the only thing that can release is
 # an approved, merged pull request.
@@ -84,7 +89,13 @@ tags and announces it.
                    new commits or a merge of main to refresh both.
                    A MILESTONE branch (milestone/next) is the usual case: the pull requests
                    merged into it are what it releases, so they decide the bump and fill
-                   the notes, and the branch's own pull request title does not count.
+                   the notes, and the branch's own pull request title does not count: this
+                   script writes it, "Release vX.Y.Z: <the first pull request that decided
+                   the version> and N more".
+                   Either way the pull request needs a SUMMARY: a few lines at the top of
+                   its description saying what the release brings (what is new, what does
+                   not change). It is kept on every re-run; without it a real run refuses
+                   and --dry-run warns.
 
   (no argument)    the version is computed from the pull requests merged since the
                    latest v* tag (Conventional Commits): a breaking change ("!" after
@@ -322,6 +333,9 @@ added="" changed="" fixed="" removed=""
 # requests that decided it: only those at the highest level, so the release PR can say
 # exactly why it is a major, a minor or a patch.
 bump="" bump_why=""
+# For a milestone branch's title: the subject of the first pull request (lowest number)
+# among those that decided the bump, and how many changes the release lists in all.
+headline="" headline_number="" entries=0
 cc_re='^([A-Za-z]+)(\(([^)]*)\))?(!)?:[[:space:]]*(.*)$'
 prs="$(list_merged_prs | sort -n)"
 # On a branch, the pull requests merged into it count like main's (a milestone branch:
@@ -368,8 +382,14 @@ while IFS=$'\037' read -r number title body_breaking; do
     changed="${changed}${entry}"$'\n'
   fi
   if [ -n "$breaking" ]; then level=major; elif [ "$type" = "feat" ]; then level=minor; else level=patch; fi
-  if [ "$(bump_rank "$level")" -gt "$(bump_rank "$bump")" ]; then bump="$level" bump_why=""; fi
-  if [ "$level" = "$bump" ]; then bump_why="${bump_why}- ${title}${number:+ (#${number})}"$'\n'; fi
+  entries=$((entries + 1))
+  if [ "$(bump_rank "$level")" -gt "$(bump_rank "$bump")" ]; then bump="$level" bump_why="" headline="" headline_number=""; fi
+  if [ "$level" = "$bump" ]; then
+    bump_why="${bump_why}- ${title}${number:+ (#${number})}"$'\n'
+    if [ -z "$headline" ] || { [ -n "$number" ] && [ "$number" -lt "${headline_number:-999999999}" ]; }; then
+      headline="$subject" headline_number="$number"
+    fi
+  fi
 done <<<"$prs"
 
 notes=""
@@ -425,9 +445,19 @@ compare=""
 [ -n "$last_tag" ] && compare="**Full diff:** https://github.com/${REPO_SLUG}/compare/${last_tag}...${tag}"$'\n'
 
 pr_title="chore(release): $tag"
-# On a branch the pull request keeps its own title — its type decides the bump — and says
-# that it releases: " (release vX.Y.Z)" at the end, replacing an earlier run's suffix.
+# On a feature branch the pull request keeps its own title — its type decides the bump —
+# and says that it releases: " (release vX.Y.Z)" at the end, replacing an earlier run's
+# suffix.
 [ "$mode" = branch ] && pr_title="$(strip_release_suffix "$pr_title_now") (release $tag)"
+# A milestone branch's pull request has no change of its own to name, so its title is
+# written here, from what it releases: the version, the first pull request that decided
+# it, and how many more there are. Rewritten on every run, so it follows what is merged.
+if [ "$mode" = branch ] && [ -n "$branch_prs" ] && [ -n "$headline" ]; then
+  # GitHub cuts a title at 256 characters: a long subject is shortened, not the version.
+  [ "${#headline}" -le 180 ] || headline="${headline:0:179}…"
+  pr_title="Release $tag: $headline"
+  [ "$entries" -le 1 ] || pr_title="$pr_title and $((entries - 1)) more"
+fi
 if [ "$mode" = branch ]; then
   merge_line="Merging this pull request also releases **${tag}**: its changes and the version bump
 ship together, under the one approval."
@@ -464,6 +494,21 @@ if [ "$mode" = branch ]; then
     !skip { print }')"
   kept="$(printf '%s' "$kept" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
   pr_body="${kept}"$'\n\n'"<!-- release:start -->"$'\n'"${pr_body}"$'\n'"<!-- release:end -->"
+
+  # The block above is a list of pull request titles: what the release IS has to be said
+  # by its author, above the block, where every re-run keeps it. It is the first thing
+  # shown in the pull request, in the message of its merge commit and in every preview.
+  # Nothing but comments and blank lines, or the placeholder these pull requests used to be
+  # opened with, is no summary.
+  summary="$(printf '%s' "$kept" | sed -e 's/<!--[^>]*-->//g' | tr -d '[:space:]')"
+  if [ -n "$pr_number" ] && { [ -z "$summary" ] || [ "$summary" = "Filledinbybin/release-prepare." ]; }; then
+    no_summary="pull request #$pr_number has no summary: write, at the top of its description, a few lines saying what this release brings (what is new, what does not change)"
+    if [ "$dry_run" = 1 ]; then
+      warn "$no_summary; a real run refuses without it"
+    else
+      die "$no_summary, then run this again (--dry-run lists what it releases)"
+    fi
+  fi
 fi
 
 # --- 3. version bump --------------------------------------------------------------------
